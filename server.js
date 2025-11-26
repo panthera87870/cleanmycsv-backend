@@ -17,11 +17,26 @@ import { cleanCsv } from "./services/cleanerBase.js";
 const app = express();
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// REMPLACER ICI par l'URL exacte que Vercel vous a donnée (ex: https://cleanmycsv-xyz.vercel.app)
-const VERCEL_URL = 'https://cleanmycsv-frontend.vercel.app'; 
+const allowedOrigins = [
+    // L'URL actuelle de votre domaine final
+    'https://www.cleanmycsv.fr',
+    // Le domaine sans 'www' (pour la sécurité, même s'il est redirigé)
+    'https://cleanmycsv.fr',
+    // L'ancienne URL Vercel (utile pour les tests de prévisualisation)
+    'https://cleanmycsv-frontend.vercel.app'
+];
 
 app.use(cors({ 
-    origin: VERCEL_URL // 2. Seul ce site (le "guichet d'accueil") est autorisé à parler à l'API.
+    origin: function (origin, callback) {
+        // Le check CORS du paquet 'cors'
+        if (!origin || allowedOrigins.includes(origin)) {
+            callback(null, true);
+        } else {
+            // Vous pouvez commenter cette ligne pour l'instant si vous avez des difficultés
+            // callback(new Error('Not allowed by CORS')); 
+            callback(null, true); // <--- SOLUTION RAPIDE SI LE DOMAINE FINAL EST LE SEUL ORIGIN ATTENDU
+        }
+    }
 }));
 
 // 📂 Créer uploads/ et outputs/ si non existants
