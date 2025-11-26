@@ -1,4 +1,5 @@
 import express from "express";
+const cors = require('cors'); // 1. Import du paquet cors
 import multer from "multer";
 import fs from "fs";
 
@@ -15,6 +16,13 @@ import { cleanCsv } from "./services/cleanerBase.js";
 
 const app = express();
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// REMPLACER ICI par l'URL exacte que Vercel vous a donnée (ex: https://cleanmycsv-xyz.vercel.app)
+const VERCEL_URL = 'cleanmycsv-frontend.vercel.app'; 
+
+app.use(cors({ 
+    origin: VERCEL_URL // 2. Seul ce site (le "guichet d'accueil") est autorisé à parler à l'API.
+}));
 
 // 📂 Créer uploads/ et outputs/ si non existants
 if (!fs.existsSync("uploads")) fs.mkdirSync("uploads");
@@ -264,10 +272,14 @@ app.post("/clean-file", upload.single("csv_file_to_clean"), async (req, res) => 
 });
 
 // --- DÉMARRAGE DU SERVEUR ET DU NETTOYEUR ---
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🚀 Serveur lancé sur le port ${PORT}`);
-  
+// La variable process.env.PORT est donnée par Cloud Run.
+// On utilise 8080 comme valeur par défaut si elle n'est pas trouvée (pour les tests locaux).
+const PORT = process.env.PORT || 8080; 
+
+// Le '0.0.0.0' dit au serveur d'écouter toutes les adresses disponibles.
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server listening on port ${PORT}`);
+
   // Lancer le nettoyage une première fois au démarrage
   cleanupStaleFiles();
   
