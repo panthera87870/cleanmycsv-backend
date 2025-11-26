@@ -1,5 +1,5 @@
 import express from "express";
-const cors = require('cors'); // 1. Import du paquet cors
+import cors from "cors"; // 1. Import du paquet cors
 import multer from "multer";
 import fs from "fs";
 
@@ -18,7 +18,7 @@ const app = express();
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // REMPLACER ICI par l'URL exacte que Vercel vous a donnée (ex: https://cleanmycsv-xyz.vercel.app)
-const VERCEL_URL = 'cleanmycsv-frontend.vercel.app'; 
+const VERCEL_URL = 'https://cleanmycsv-frontend.vercel.app'; 
 
 app.use(cors({ 
     origin: VERCEL_URL // 2. Seul ce site (le "guichet d'accueil") est autorisé à parler à l'API.
@@ -36,7 +36,7 @@ const STALE_TIME_MS = 30 * 60 * 1000; // 30 minutes en millisecondes
 const upload = multer({ dest: "uploads/" });
 
 // --- Servir les fichiers du dossier public ---
-app.use(express.static(join(__dirname, "public")));
+// app.use(express.static(join(__dirname, "public")));
 
 // --- Servir les fichiers nettoyés et les rapports JSON ---
 // Cette route est appelée par le front-end pour télécharger le résultat
