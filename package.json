@@ -1,0 +1,26 @@
+{
+  "name": "cleanmycsv",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "archiver": "^7.0.1",
+    "chardet": "^2.1.0",
+    "exceljs": "^4.4.0",
+    "express": "^5.1.0",
+    "iconv-lite": "^0.7.0",
+    "multer": "^2.0.2",
+    "papaparse": "^5.5.3"
+  },
+  "directories": {
+    "test": "test"
+  },
+  "description": ""
+}
