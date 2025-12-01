@@ -23,12 +23,15 @@ const allowedOrigins = [
     'https://cleanmycsv-frontend.vercel.app'
 ];
 
+// Correction recommandée pour server.js
 app.use(cors({ 
     origin: function (origin, callback) {
+        // Autoriser les requêtes sans origine (comme curl ou Postman) ou les origines listées
         if (!origin || allowedOrigins.includes(origin)) {
             callback(null, true);
         } else {
-            callback(null, true); // <--- SOLUTION RAPIDE SI LE DOMAINE FINAL EST LE SEUL ORIGIN ATTENDU
+            // Rejeter les autres origines en production
+            callback(new Error('Not allowed by CORS')); 
         }
     }
 }));
