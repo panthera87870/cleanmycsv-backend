@@ -41,8 +41,8 @@ const UPLOADS_DIR = join(__dirname, "uploads");
 const STALE_TIME_MS = 30 * 60 * 1000; // 30 minutes
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
-if (!fs.existsSync("uploads")) fs.mkdirSync("uploads");
-if (!fs.existsSync("outputs")) fs.mkdirSync("outputs");
+if (!fsStandard.existsSync(UPLOADS_DIR)) fsStandard.mkdirSync(UPLOADS_DIR);
+if (!fsStandard.existsSync(OUTPUTS_DIR)) fsStandard.mkdirSync(OUTPUTS_DIR);
 
 const upload = multer({ dest: "uploads/" });
 
