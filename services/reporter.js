@@ -96,9 +96,9 @@ export function analyzeReport(report, originalRowsCount, cleanedRowsCount, origi
 
     // 1. Détermination du message initial
     if (totalRowsAffected === 0 && stats.rowsRemoved === 0 && stats.columnAddedCurrency === 0) {
-        humanSummary = `🎉 Votre fichier était **parfait** !`;
+        humanSummary = `<strong>Votre fichier était parfait !<strong><br>`;
     } else {
-        humanSummary = `<strong>🛠️ Nettoyage terminé !</strong> ${impactMessageText}`;
+        humanSummary = `<strong>Nettoyage terminé !</strong><br> ${impactMessageText}`;
     }
 
 
@@ -106,13 +106,13 @@ export function analyzeReport(report, originalRowsCount, cleanedRowsCount, origi
     
     // a) Colonnes (Structurel)
     if (stats.columnAddedCurrency > 0) {
-        groupB_Actions.push(`<strong>Modification Structurelle :</strong> La colonne "Devise" a été insérée à côté du montant.`);
+        groupB_Actions.push(`<strong>Modification structurelle :</strong> La colonne "Devise" a été insérée à côté du montant.`);
     }
 
     // b) Suppressions (Structurel sur les lignes)
     if (stats.rowsRemoved > 0) {
         let detail = `${formatNumber(stats.rowsRemoved)} lignes ont été retirées (Doublons: ${formatNumber(stats.rowsRemovedDoublons)}, Vides: ${formatNumber(stats.rowsRemovedVides)}).`;
-        groupB_Actions.push(`<strong>Suppressions de Lignes :</strong> ${detail}`);
+        groupB_Actions.push(`<strong>Suppressions de lignes :</strong> ${detail}`);
     }
 
     // c) Corrections de Valeurs (Cellulaire)
@@ -124,7 +124,7 @@ export function analyzeReport(report, originalRowsCount, cleanedRowsCount, origi
     if (stats.generalFixes > 0) correctionsDetails.push(`${formatNumber(stats.generalFixes)} corrections générales.`);
 
     if (correctionsDetails.length > 0) {
-        groupB_Actions.push(`<strong>Normalisation des Valeurs :</strong> ${correctionsDetails.join(' | ')}.`);
+        groupB_Actions.push(`<strong>Normalisation des valeurs :</strong> ${correctionsDetails.join(' | ')}.`);
     }
 
     // 3. Assemblage des blocs pour l'affichage final
@@ -132,8 +132,8 @@ export function analyzeReport(report, originalRowsCount, cleanedRowsCount, origi
     // Bloc de Diagnostic
     const diagnosticBlock = `
         <div class="report-diagnostic">
-            <p><strong>Fichier Original :</strong> ${formatNumber(totalOriginalRows)} lignes (dont 1 en-tête) et ${formatNumber(stats.originalColumnCount)} colonnes.</p>
-            <p><strong>Fichier Final :</strong> ${formatNumber(totalCleanedRows)} lignes (dont 1 en-tête) et ${formatNumber(finalColumnCount)} colonnes.</p>
+            <p><strong>Fichier original :</strong> ${formatNumber(totalOriginalRows)} lignes (dont 1 en-tête) et ${formatNumber(stats.originalColumnCount)} colonnes.</p>
+            <p><strong>Fichier final :</strong> ${formatNumber(totalCleanedRows)} lignes (dont 1 en-tête) et ${formatNumber(finalColumnCount)} colonnes.<br><br></p>
         </div>
     `;
     
@@ -144,7 +144,7 @@ export function analyzeReport(report, originalRowsCount, cleanedRowsCount, origi
          const actionList = groupB_Actions.map(c => `<li>${c}</li>`).join('');
          humanSummary += `
             <hr/>
-            <h3>Détails des Actions</h3>
+            <h3>Détails des actions : <br></h3>
             <ul class="report-list">
                 ${actionList}
             </ul>
