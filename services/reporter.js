@@ -91,7 +91,7 @@ export function analyzeReport(report, originalRowsCount, cleanedRowsCount, origi
 
     // Clarification de l'Impact Global
     const impactMessageText = totalRowsAffected > 0 
-        ? `L'opération a touché un total de <strong>${formatNumber(totalRowsAffected)} lignes uniques</strong> (lignes de données affectées par au moins une correction ou suppression).`
+        ? `L'opération a touché un total de <strong>${formatNumber(totalRowsAffected)} lignes uniques</strong> (lignes de données affectées par au moins une correction ou suppression).<br><br>`
         : `L'opération n'a détecté aucune valeur à corriger, le fichier était parfait.`;
 
     // 1. Détermination du message initial
@@ -143,7 +143,6 @@ export function analyzeReport(report, originalRowsCount, cleanedRowsCount, origi
     if (groupB_Actions.length > 0) {
          const actionList = groupB_Actions.map(c => `<li>${c}</li>`).join('');
          humanSummary += `
-            <hr/>
             <h3>Détails des actions : <br></h3>
             <ul class="report-list">
                 ${actionList}
