@@ -1,5 +1,5 @@
 import express from "express";
-import cors from "cors"; // 1. Import du paquet cors
+import cors from "cors"; 
 import multer from "multer";
 import fsStandard from "fs"; 
 import fs from "fs/promises";
@@ -7,7 +7,7 @@ import fs from "fs/promises";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { randomUUID } from "crypto"; 
-import helmet from "helmet"; // 🔥 MODIF: Ajout conseillé pour la sécurité (npm install helmet)
+import helmet from "helmet"; 
 
 import { cleanCsv } from "./services/cleaner.js";
 import { 
@@ -18,80 +18,89 @@ import {
 const app = express();
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+// --- SPÉCIFIQUE CLOUD RUN (PROD) ---
+// Indispensable car Cloud Run gère le SSL (HTTPS) via un Load Balancer.
+// Sans ça, Express pense qu'il est en HTTP et HSTS ne fonctionne pas.
+app.enable('trust proxy'); 
+
 const allowedOrigins = [
     'https://www.cleanmycsv.fr',
     'https://cleanmycsv.fr',
     'https://cleanmycsv-frontend.vercel.app'
 ];
 
-// 🔥 MODIF: Sécurité HTTP de base
+// 🔥 CONFIGURATION HELMET : SÉCURITÉ MAXIMALE POUR LA PROD
 app.use(helmet({
     contentSecurityPolicy: {
         directives: {
-            scriptSrc: [
-                "'self'", 
-                "'unsafe-inline'",
-                "https://kit.fontawesome.com"
-            ], 
+            defaultSrc: ["'self'"], 
+            
+            // Scripts : Uniquement tes fichiers JS locaux
+            scriptSrc: ["'self'"], 
+            
+            // Styles : Ton CSS + Google Fonts + FontAwesome CDN
             styleSrc: [
                 "'self'", 
-                "'unsafe-inline'", 
-                "https://fonts.googleapis.com", 
-                "https://fonts.gstatic.com",
-                "https://ka-f.fontawesome.com" // <-- AJOUT pour les CSS de Font Awesome
+                "https://fonts.googleapis.com",
+                "https://cdnjs.cloudflare.com" 
             ],
-            // 🔥 AJOUT CRITIQUE pour Font Awesome (connect-src)
-            connectSrc: [
+            
+            // Polices : Google Fonts + FontAwesome CDN
+            fontSrc: [
                 "'self'", 
-                "https://ka-f.fontawesome.com"
-            ], 
+                "https://fonts.gstatic.com",
+                "https://cdnjs.cloudflare.com"
+            ],
+            
+            // Images : Tes images locales + images base64 (data:)
             imgSrc: ["'self'", "data:"], 
-            defaultSrc: ["'self'"], 
-            scriptSrcAttr: ["'unsafe-inline'"], 
+            
+            // Connexions AJAX : Uniquement vers ton serveur
+            connectSrc: ["'self'"], 
+            
+            frameAncestors: ["'none'"],
+            objectSrc: ["'none'"],
+            upgradeInsecureRequests: [],
         },
     },
-    // Désactiver HSTS pour le développement local
+    // 🔥 HSTS ACTIVÉ EN PROD (Force le HTTPS pendant 1 an)
     hsts: {
-        maxAge: 0 
+        maxAge: 31536000, 
+        includeSubDomains: true,
+        preload: true
     }
 }));
 
-// Correction recommandée pour server.js
+// Configuration CORS (On garde ta config de prod)
 app.use(cors({ 
     origin: function (origin, callback) {
-        // Autoriser les requêtes sans origine (comme curl ou Postman) ou les origines listées
         if (!origin || allowedOrigins.includes(origin)) {
             callback(null, true);
         } else {
-            // Rejeter les autres origines en production
             callback(new Error('Not allowed by CORS')); 
         }
     }
 }));
 
 const OUTPUTS_DIR = join(__dirname, "outputs");
-
 const STALE_TIME_MS = 30 * 60 * 1000; // 30 minutes
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
 if (!fsStandard.existsSync(OUTPUTS_DIR)) fsStandard.mkdirSync(OUTPUTS_DIR);
 
-// 🔥 MODIF: CONFIGURATION MULTER SÉCURISÉE (MÉMOIRE + LIMITE)
+// CONFIGURATION MULTER SÉCURISÉE
 const upload = multer({ 
-    storage: multer.memoryStorage(), // Stocke en RAM, pas sur le disque
-    limits: { fileSize: 50 * 1024 * 1024 } // Limite stricte à 50 Mo
+    storage: multer.memoryStorage(), 
+    limits: { fileSize: 50 * 1024 * 1024 } 
 });
 
 // --- ROUTES ---
 
 // ROUTE 1: Téléchargement 
-app.get("/download/:filename", async (req, res) => { // AJOUT: async
+app.get("/download/:filename", async (req, res) => { 
     const filename = req.params.filename;
     
-    // Sécurité chemin
-    if (filename.includes("..")) {
-        return res.status(400).send("Nom de fichier invalide.");
-    }
+    if (filename.includes("..")) return res.status(400).send("Nom de fichier invalide.");
     const filePath = join(OUTPUTS_DIR, filename);
 
     try {
@@ -103,30 +112,20 @@ app.get("/download/:filename", async (req, res) => { // AJOUT: async
         res.setHeader("Content-Disposition", `attachment; filename="${publicDownloadName}"`);
         res.setHeader("Content-Type", isCsv ? "text/csv" : "application/json");
 
-        // Lecture Stream 
         const fileStream = fsStandard.createReadStream(filePath);
         fileStream.pipe(res);
         fileStream.on("close", async () => {
-            try {
-                await fs.unlink(filePath); // unlink au lieu de unlinkSync
-                // console.log(`[CLEANUP] Fichier supprimé : ${filename}`);
-            } catch (cleanupErr) {
-                console.error(`Erreur cleanup ${filename}:`, cleanupErr.message);
-            }
+            try { await fs.unlink(filePath); } catch (cleanupErr) { console.error(`Erreur cleanup ${filename}:`, cleanupErr.message); }
         });
         
-        fileStream.on("error", (err) => {
-            console.error("Erreur stream:", err.message);
-            res.status(500).end();
-        });
+        fileStream.on("error", (err) => { res.status(500).end(); });
 
     } catch (err) {
-        // Si fs.stat échoue (fichier non trouvé)
         res.status(404).send("Fichier non trouvé ou expiré.");
     }
 });
 
-// ROUTE 2: Upload et Nettoyage (🔥 TOTALEMENT REVISITÉE)
+// ROUTE 2: Upload et Nettoyage
 app.post("/clean-file", upload.single("csv_file_to_clean"), async (req, res) => {
     let originalRowsCount = 0;
     let originalColumnCount = 0;
@@ -138,46 +137,24 @@ app.post("/clean-file", upload.single("csv_file_to_clean"), async (req, res) => 
     try {
         if (!req.file) throw new Error("Aucun fichier n'a été téléversé.");
         
-        // 🔥 MODIF: On récupère le BUFFER (mémoire) et non plus le path
         const fileBuffer = req.file.buffer; 
-
         const publicNames = generateCleanFilenames(originalFileName);
 
-        // Noms temporaires (UUID) pour les fichiers de SORTIE (ceux-là vont sur le disque)
         const tempUuid = randomUUID();
         tempCsvFileName = `clean-${tempUuid}.csv`;
         tempReportFileName = `report-${tempUuid}.json`;
 
-        // 🔥 MODIF: Appel de cleanCsv avec le buffer
-        // (Rappel: Tu dois avoir modifié cleaner.js pour accepter le buffer en 1er argument)
-        const result = await cleanCsv(
-            fileBuffer, 
-            tempCsvFileName, 
-            tempReportFileName, 
-            OUTPUTS_DIR
-        );
+        const result = await cleanCsv(fileBuffer, tempCsvFileName, tempReportFileName, OUTPUTS_DIR);
 
-        // 🔥 MODIF: Sécurité - On vide la mémoire manuellement
         req.file.buffer = null; 
 
-        const cleanedRowsCount = result.cleaned.length // > 0 ? result.cleaned.length - 1 : 0;
-        
-        originalRowsCount = result.originalRowsCount; // Lignes totales initiales (avec en-tête)
-        originalColumnCount = result.originalColumnCount; // Colonnes initiales
+        originalRowsCount = result.originalRowsCount; 
+        originalColumnCount = result.originalColumnCount; 
 
         const tempReportPath = join(OUTPUTS_DIR, tempReportFileName);
         const reportRaw = await fs.readFile(tempReportPath, 'utf-8');
-        const reportContent = JSON.parse(reportRaw);
+        const summary = analyzeReport(JSON.parse(reportRaw), originalRowsCount, result.cleaned.length, originalColumnCount);
 
-        // Résumé Humain
-        const summary = analyzeReport(reportContent, originalRowsCount, cleanedRowsCount, originalColumnCount);
-
-        // Suppression du fichier uploadé en Async
-        // if (await fs.access(filePath).then(() => true).catch(() => false)) {
-        //    await fs.unlink(filePath);
-       // }
-
-        // Réponse JSON
         res.json({
             success: true,
             summary: summary,
@@ -190,14 +167,11 @@ app.post("/clean-file", upload.single("csv_file_to_clean"), async (req, res) => 
     } catch (err) {
         console.error("ERREUR /clean-file:", err.message);
 
-        // Gestion des erreurs de taille de fichier (Multer)
         if (err.code === 'LIMIT_FILE_SIZE') {
              return res.status(400).json({ success: false, message: "Le fichier est trop volumineux (Max 50Mo)." });
         }
+        res.status(500).json({ success: false, message: "Erreur serveur." });
 
-        res.status(500).json({ success: false, message: "Erreur serveur : " });
-
-        // Nettoyage d'urgence (Async)
         try {
             if (tempCsvFileName) await fs.unlink(join(OUTPUTS_DIR, tempCsvFileName)).catch(() => {});
             if (tempReportFileName) await fs.unlink(join(OUTPUTS_DIR, tempReportFileName)).catch(() => {});
@@ -205,40 +179,29 @@ app.post("/clean-file", upload.single("csv_file_to_clean"), async (req, res) => 
     }
 });
 
-
 // --- TÂCHE DE FOND (NETTOYAGE) ---
-
 async function cleanupStaleFiles() {
-    // console.log(`[NETTOYAGE] Vérification...`);
     try {
-        // Lecture async du dossier
         const files = await fs.readdir(OUTPUTS_DIR);
         const now = Date.now();
-
         for (const file of files) {
             if (file.startsWith('.')) continue;
             const filePath = join(OUTPUTS_DIR, file);
-
             try {
-                const stats = await fs.stat(filePath); // Async stat
+                const stats = await fs.stat(filePath); 
                 if ((now - stats.mtimeMs) > STALE_TIME_MS) {
-                    await fs.unlink(filePath); // Async delete
+                    await fs.unlink(filePath); 
                     console.log(`[NETTOYAGE] Supprimé : ${file}`);
                 }
-            } catch (e) {
-                // Fichier déjà parti, on ignore
-            }
+            } catch (e) { }
         }
-    } catch (err) {
-        console.error("[NETTOYAGE] Erreur:", err.message);
-    }
+    } catch (err) { console.error("[NETTOYAGE] Erreur:", err.message); }
 }
 
+// PORT POUR CLOUD RUN (8080)
 const PORT = process.env.PORT || 8080; 
 app.listen(PORT, '0.0.0.0', () => {
-    // AJOUT D'UN COMMENTAIRE POUR FORCER LE BUILD
-    console.log(`Serveur lancé sur le port ${PORT}`);
-
+    console.log(`Serveur Production lancé sur le port ${PORT}`);
     cleanupStaleFiles();
     setInterval(cleanupStaleFiles, CLEANUP_INTERVAL_MS);
 });
