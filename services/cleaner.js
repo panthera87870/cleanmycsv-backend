@@ -1,29 +1,21 @@
-import { join } from "path";
 import Papa from "papaparse";
 import chardet from "chardet";
 import iconv from "iconv-lite";
-
-// 💡 IMPORT DES FONCTIONS PURES (NORMALIZERS)
-import { 
-    normalizeAmount, 
-    normalizeDate,
-    detectSeparator
-} from "./normalizers.js"; 
-
-// Importation de fs/promises pour les opérations I/O asynchrones (Performance)
 import fs from "fs/promises";
+import { join } from "path";
+import { normalizeAmount, normalizeDate, detectSeparator } from "./normalizers.js"; 
 
 // --- FONCTION PRINCIPALE ---
 
 /**
  * Nettoie un fichier CSV et écrit le résultat et le rapport.
- * @param {string} filePath Chemin complet du fichier CSV à nettoyer (dans /uploads).
+ * @param {string} fileBuffer Chemin complet du fichier CSV à nettoyer (dans /uploads).
  * @param {string} csvOutputFilename Nom du fichier CSV nettoyé à créer (ex: clean-uuid.csv).
  * @param {string} reportOutputFilename Nom du rapport JSON à créer (ex: report-uuid.json).
  * @param {string} OUTPUT_DIR Le chemin absolu du dossier de sortie. (Correction Robustesse)
  * @returns {Promise<{cleaned: Array<Array<string>>, report: Array<Object>}>} Les données nettoyées et le rapport.
  */
-export async function cleanCsv(filePath, csvOutputFilename, reportOutputFilename, OUTPUT_DIR) {
+export async function cleanCsv(fileBuffer, csvOutputFilename, reportOutputFilename, OUTPUT_DIR) {
     
     // Construction des chemins d'écriture complets sécurisés
     const finalCsvPath = join(OUTPUT_DIR, csvOutputFilename);
@@ -34,18 +26,16 @@ export async function cleanCsv(filePath, csvOutputFilename, reportOutputFilename
 
     // 1. Lecture asynchrone du fichier et détection d'encodage (Performance)
     try {
-        // 1. Détection d'encodage NEW
-        const buffer = await fs.readFile(filePath);
-
-        let encoding = chardet.detectFileSync(filePath) || "UTF-8";
+        // 1. Détection d'encodage
+        let encoding = chardet.detect(fileBuffer) || "UTF-8";
         let content;
 
         // Tentative de décodage avec l'encodage détecté, avec fallback sur Windows-1252
         try {
-            content = iconv.decode(buffer, encoding);
+            content = iconv.decode(fileBuffer, encoding);
         } catch (e) {
             encoding = 'win1252'; // Fallback pour les fichiers européens courants
-            content = iconv.decode(buffer, encoding); 
+            content = iconv.decode(fileBuffer, encoding); 
             report.push({ 
                 row: -1, 
                 column: "ENCODAGE", 
@@ -58,7 +48,7 @@ export async function cleanCsv(filePath, csvOutputFilename, reportOutputFilename
         // 2. Détection automatique du séparateur NEW
         const separator = detectSeparator(content);
   
-        console.log(`[DEBUG] Séparateur gagnant utilisé pour le parsing : "${separator}"`);
+        // console.log(`[DEBUG] Séparateur gagnant utilisé pour le parsing : "${separator}"`);
 
         // 3. Parsing avec PapaParse (Correction Robustesse: Ajout du Try...Catch)
         let parsed;
@@ -299,7 +289,7 @@ export async function cleanCsv(filePath, csvOutputFilename, reportOutputFilename
         };
 
     } catch (error) {
-        console.error("Erreur critique dans cleanCsv:", error);
+        console.error("Erreur critique dans cleanCsv:", error.message);
         throw error;
     }
 }

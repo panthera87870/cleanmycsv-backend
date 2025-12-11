@@ -7,6 +7,7 @@ import fs from "fs/promises";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { randomUUID } from "crypto"; 
+import helmet from "helmet"; // 🔥 MODIF: Ajout conseillé pour la sécurité (npm install helmet)
 
 import { cleanCsv } from "./services/cleaner.js";
 import { 
@@ -23,6 +24,38 @@ const allowedOrigins = [
     'https://cleanmycsv-frontend.vercel.app'
 ];
 
+// 🔥 MODIF: Sécurité HTTP de base
+app.use(helmet({
+    contentSecurityPolicy: {
+        directives: {
+            scriptSrc: [
+                "'self'", 
+                "'unsafe-inline'",
+                "https://kit.fontawesome.com"
+            ], 
+            styleSrc: [
+                "'self'", 
+                "'unsafe-inline'", 
+                "https://fonts.googleapis.com", 
+                "https://fonts.gstatic.com",
+                "https://ka-f.fontawesome.com" // <-- AJOUT pour les CSS de Font Awesome
+            ],
+            // 🔥 AJOUT CRITIQUE pour Font Awesome (connect-src)
+            connectSrc: [
+                "'self'", 
+                "https://ka-f.fontawesome.com"
+            ], 
+            imgSrc: ["'self'", "data:"], 
+            defaultSrc: ["'self'"], 
+            scriptSrcAttr: ["'unsafe-inline'"], 
+        },
+    },
+    // Désactiver HSTS pour le développement local
+    hsts: {
+        maxAge: 0 
+    }
+}));
+
 // Correction recommandée pour server.js
 app.use(cors({ 
     origin: function (origin, callback) {
@@ -37,14 +70,17 @@ app.use(cors({
 }));
 
 const OUTPUTS_DIR = join(__dirname, "outputs");
-const UPLOADS_DIR = join(__dirname, "uploads");
+
 const STALE_TIME_MS = 30 * 60 * 1000; // 30 minutes
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
-if (!fsStandard.existsSync(UPLOADS_DIR)) fsStandard.mkdirSync(UPLOADS_DIR);
 if (!fsStandard.existsSync(OUTPUTS_DIR)) fsStandard.mkdirSync(OUTPUTS_DIR);
 
-const upload = multer({ dest: "uploads/" });
+// 🔥 MODIF: CONFIGURATION MULTER SÉCURISÉE (MÉMOIRE + LIMITE)
+const upload = multer({ 
+    storage: multer.memoryStorage(), // Stocke en RAM, pas sur le disque
+    limits: { fileSize: 50 * 1024 * 1024 } // Limite stricte à 50 Mo
+});
 
 // --- ROUTES ---
 
@@ -75,12 +111,12 @@ app.get("/download/:filename", async (req, res) => { // AJOUT: async
                 await fs.unlink(filePath); // unlink au lieu de unlinkSync
                 // console.log(`[CLEANUP] Fichier supprimé : ${filename}`);
             } catch (cleanupErr) {
-                console.error(`Erreur cleanup ${filename}:`, cleanupErr);
+                console.error(`Erreur cleanup ${filename}:`, cleanupErr.message);
             }
         });
         
         fileStream.on("error", (err) => {
-            console.error("Erreur stream:", err);
+            console.error("Erreur stream:", err.message);
             res.status(500).end();
         });
 
@@ -90,11 +126,10 @@ app.get("/download/:filename", async (req, res) => { // AJOUT: async
     }
 });
 
-// ROUTE 2: Upload et Nettoyage
+// ROUTE 2: Upload et Nettoyage (🔥 TOTALEMENT REVISITÉE)
 app.post("/clean-file", upload.single("csv_file_to_clean"), async (req, res) => {
-    let filePath;
     let originalRowsCount = 0;
-    let originalColumnCount = 0; // 🛑 AJOUT : Déclaration ici
+    let originalColumnCount = 0;
     const originalFileName = req.file?.originalname; 
     
     let tempCsvFileName;
@@ -103,31 +138,27 @@ app.post("/clean-file", upload.single("csv_file_to_clean"), async (req, res) => 
     try {
         if (!req.file) throw new Error("Aucun fichier n'a été téléversé.");
         
-        filePath = req.file.path; // Chemin temporaire Multer
-        
-        // 🛑 SUPPRESSION DU BLOC DE PRE-ANALYSE
-        // Le parsing, l'encodage et le comptage initial sont maintenant gérés par cleanCsv.
-        /*
-        const buffer = await fs.readFile(filePath); // Lecture async
-        const encoding = chardet.detect(buffer) || "UTF-8";
-        const originalContent = iconv.decode(buffer, encoding);
-        const originalParsed = Papa.parse(originalContent, { skipEmptyLines: true });
-        originalRowsCount = originalParsed.data.length > 0 ? originalParsed.data.length - 1 : 0; 
-        */
+        // 🔥 MODIF: On récupère le BUFFER (mémoire) et non plus le path
+        const fileBuffer = req.file.buffer; 
 
         const publicNames = generateCleanFilenames(originalFileName);
 
-        // Noms temporaires (UUID)
+        // Noms temporaires (UUID) pour les fichiers de SORTIE (ceux-là vont sur le disque)
         const tempUuid = randomUUID();
         tempCsvFileName = `clean-${tempUuid}.csv`;
         tempReportFileName = `report-${tempUuid}.json`;
 
+        // 🔥 MODIF: Appel de cleanCsv avec le buffer
+        // (Rappel: Tu dois avoir modifié cleaner.js pour accepter le buffer en 1er argument)
         const result = await cleanCsv(
-            filePath, 
+            fileBuffer, 
             tempCsvFileName, 
             tempReportFileName, 
             OUTPUTS_DIR
         );
+
+        // 🔥 MODIF: Sécurité - On vide la mémoire manuellement
+        req.file.buffer = null; 
 
         const cleanedRowsCount = result.cleaned.length // > 0 ? result.cleaned.length - 1 : 0;
         
@@ -142,9 +173,9 @@ app.post("/clean-file", upload.single("csv_file_to_clean"), async (req, res) => 
         const summary = analyzeReport(reportContent, originalRowsCount, cleanedRowsCount, originalColumnCount);
 
         // Suppression du fichier uploadé en Async
-        if (await fs.access(filePath).then(() => true).catch(() => false)) {
-            await fs.unlink(filePath);
-        }
+        // if (await fs.access(filePath).then(() => true).catch(() => false)) {
+        //    await fs.unlink(filePath);
+       // }
 
         // Réponse JSON
         res.json({
@@ -157,12 +188,17 @@ app.post("/clean-file", upload.single("csv_file_to_clean"), async (req, res) => 
         });
 
     } catch (err) {
-        console.error("ERREUR /clean-file:", err);
-        res.status(500).json({ success: false, message: "Erreur serveur : " + err.message });
+        console.error("ERREUR /clean-file:", err.message);
+
+        // Gestion des erreurs de taille de fichier (Multer)
+        if (err.code === 'LIMIT_FILE_SIZE') {
+             return res.status(400).json({ success: false, message: "Le fichier est trop volumineux (Max 50Mo)." });
+        }
+
+        res.status(500).json({ success: false, message: "Erreur serveur : " });
 
         // Nettoyage d'urgence (Async)
         try {
-            if (filePath) await fs.unlink(filePath).catch(() => {});
             if (tempCsvFileName) await fs.unlink(join(OUTPUTS_DIR, tempCsvFileName)).catch(() => {});
             if (tempReportFileName) await fs.unlink(join(OUTPUTS_DIR, tempReportFileName)).catch(() => {});
         } catch (e) { /* ignore */ }
@@ -194,7 +230,7 @@ async function cleanupStaleFiles() {
             }
         }
     } catch (err) {
-        console.error("[NETTOYAGE] Erreur:", err);
+        console.error("[NETTOYAGE] Erreur:", err.message);
     }
 }
 
