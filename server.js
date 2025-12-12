@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors"; 
 import multer from "multer";
+import compression from "compression";
 import fsStandard from "fs"; 
 import fs from "fs/promises";
 
@@ -28,6 +29,8 @@ const allowedOrigins = [
     'https://cleanmycsv.fr',
     'https://cleanmycsv-frontend.vercel.app'
 ];
+
+app.use(compression());
 
 // 🔥 CONFIGURATION HELMET : SÉCURITÉ MAXIMALE POUR LA PROD
 app.use(helmet({
