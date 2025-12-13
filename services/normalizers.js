@@ -79,6 +79,11 @@ export function normalizeDate(value) {
     if (value.match(/^\d{4}-\d{2}-\d{2}$/)) {
         return value;
     }
+    // --- AJOUT : Format AAAA/MM/JJ (ex: 2023/02/20) ---
+    // On remplace simplement les slashes par des tirets pour le rendre ISO
+    if (value.match(/^\d{4}\/\d{2}\/\d{2}$/)) {
+        return value.replace(/\//g, "-");
+    }
 
     // Format 3: DD-MON-YY (ex: 6-MAR-12 ou 06-MAR-2012)
     if (value.match(/^\d{1,2}[-\/][A-Z]{3}[-\/]\d{2,4}$/i)) {
@@ -96,9 +101,79 @@ export function normalizeDate(value) {
             }
         }
     }
+
+    // Format 4 : JJ.MM.AAAA (ex: 25.12.2023)
+    if (value.match(/^\d{2}\.\d{2}\.\d{4}$/)) {
+        // On remplace les points par des tirets et on inverse pour ISO
+        parts = value.split('.');
+        const [d, m, y] = parts;
+        return `${y}-${m}-${d}`;
+    }
     
+    // Format 5 : Nombre Excel (ex: 45290 pour une date récente)
+    // On vérifie si c'est un nombre à 5 chiffres (dates entre 1927 et 2173)
+    if (value.match(/^\d{5}$/)) {
+        const serial = parseInt(value);
+        // Formule magique pour convertir le serial Excel en Date JS
+        // (Excel commence le 30/12/1899 techniquement à cause d'un bug d'année bissextile en 1900)
+        const date = new Date(Math.round((serial - 25569) * 86400 * 1000));
+        
+        // Vérifions que ça donne une date valide
+        if (!isNaN(date.getTime())) {
+            const y = date.getFullYear();
+            const m = String(date.getMonth() + 1).padStart(2, '0');
+            const d = String(date.getDate()).padStart(2, '0');
+            return `${y}-${m}-${d}`;
+        }
+    }
+
     // Si aucune logique ne fonctionne, on retourne la valeur d'origine
     return value;
+}
+
+// normalizers.js
+
+/**
+ * Normalise un code postal français.
+ * Si le code fait 4 chiffres (ex: 6100), rajoute le 0 devant (06100).
+ * Ne touche pas aux codes complexes (étrangers, corses 2A/2B s'ils sont bien formattés).
+ */
+export function normalizePostalCode(value) {
+    if (!value) return value;
+    
+    // On nettoie les espaces
+    let clean = value.toString().trim().replace(/\s+/g, "");
+
+    // Cas spécifique France : 4 chiffres -> on rajoute le 0
+    // Ex: "6100" devient "06100"
+    if (/^\d{4}$/.test(clean)) {
+        return "0" + clean;
+    }
+
+    // Si c'est déjà 5 chiffres, on s'assure juste que c'est propre
+    if (/^\d{5}$/.test(clean)) {
+        return clean;
+    }
+
+    // Sinon (Code étranger ou corse 2A...), on renvoie tel quel
+    return value;
+}
+
+export function normalizeName(value) {
+    if (!value) return '';
+    
+    // 1. Capitalisation classique (Tout en Titre)
+    let formatted = value.toString().toLowerCase().replace(/(?:^|[\s-])\w/g, m => m.toUpperCase());
+
+    // 2. Gestion des exceptions (particules nobles)
+    // On remplace " De " par " de ", " Du " par " du " (mais pas au début de la phrase)
+    const particles = [" De ", " Du ", " Des ", " Le ", " La ", " Van ", " Von "];
+    particles.forEach(p => {
+        // Regex : On cherche la particule entourée d'espaces, pas au début du string
+        formatted = formatted.replace(new RegExp(p, 'g'), p.toLowerCase());
+    });
+
+    return formatted;
 }
 
 /**

@@ -3,17 +3,21 @@ import chardet from "chardet";
 import iconv from "iconv-lite";
 import fs from "fs/promises";
 import { join } from "path";
-import { normalizeAmount, normalizeDate, detectSeparator } from "./normalizers.js"; 
+import { 
+    normalizeAmount, 
+    normalizeDate, 
+    detectSeparator, 
+    normalizePostalCode, 
+    normalizeName 
+} from "./normalizers.js"; 
 
-// --- FONCTION PRINCIPALE ---
 
 /**
- * Nettoie un fichier CSV et écrit le résultat et le rapport.
- * @param {string} fileBuffer Chemin complet du fichier CSV à nettoyer (dans /uploads).
- * @param {string} csvOutputFilename Nom du fichier CSV nettoyé à créer (ex: clean-uuid.csv).
- * @param {string} reportOutputFilename Nom du rapport JSON à créer (ex: report-uuid.json).
- * @param {string} OUTPUT_DIR Le chemin absolu du dossier de sortie. (Correction Robustesse)
- * @returns {Promise<{cleaned: Array<Array<string>>, report: Array<Object>}>} Les données nettoyées et le rapport.
+ * Nettoie un fichier CSV (Buffer) et génère un rapport.
+ * @param {Buffer} fileBuffer - Le contenu du fichier en mémoire.
+ * @param {string} tempCsvName - Nom du fichier de sortie CSV.
+ * @param {string} tempReportName - Nom du fichier de rapport JSON.
+ * @param {string} outputDir - Dossier où sauvegarder les fichiers.
  */
 export async function cleanCsv(fileBuffer, csvOutputFilename, reportOutputFilename, OUTPUT_DIR) {
     
@@ -22,11 +26,10 @@ export async function cleanCsv(fileBuffer, csvOutputFilename, reportOutputFilena
     const finalReportPath = join(OUTPUT_DIR, reportOutputFilename);
 
     const report = [];
-    const extractedCurrencies = {}; // <-- AJOUT pour stocker les devises NEW
+    const extractedCurrencies = {};
 
-    // 1. Lecture asynchrone du fichier et détection d'encodage (Performance)
     try {
-        // 1. Détection d'encodage
+        // 1. Détection d'encodage NEW
         let encoding = chardet.detect(fileBuffer) || "UTF-8";
         let content;
 
@@ -47,8 +50,7 @@ export async function cleanCsv(fileBuffer, csvOutputFilename, reportOutputFilena
 
         // 2. Détection automatique du séparateur NEW
         const separator = detectSeparator(content);
-  
-        // console.log(`[DEBUG] Séparateur gagnant utilisé pour le parsing : "${separator}"`);
+        //console.log(`[DEBUG] Séparateur gagnant utilisé pour le parsing : "${separator}"`);
 
         // 3. Parsing avec PapaParse (Correction Robustesse: Ajout du Try...Catch)
         let parsed;
@@ -59,40 +61,32 @@ export async function cleanCsv(fileBuffer, csvOutputFilename, reportOutputFilena
                 skipEmptyLines: false 
             });
         } catch (e) {
-            // Si Papa.parse lui-même lève une erreur inattendue (rare)
             throw new Error("Erreur critique lors du parsing CSV: " + e.message);
         }
 
         if (parsed.errors.length > 0) {
-            // S'il y a des erreurs de parsing structurel (guillemets non fermés, etc.)
             console.error("Erreurs PapaParse:", parsed.errors);
             throw new Error(`Le fichier CSV est mal formaté (ligne ${parsed.errors[0].row + 1}): ${parsed.errors[0].message}`);
         }
 
         let rows = parsed.data;
 
-        // --- DÉBUT DU CORRECTIF ROBUSTE --- NEW 
-        // Détection du cas "Faux CSV" : Lignes entièrement entre guillemets
-        // Si on a des données, une seule colonne détectée, et que cette colonne contient le séparateur
+        // --- DÉBUT DU CORRECTIF ROBUSTE : Détection du cas "Faux CSV" : Lignes entièrement entre guillemets
         if (rows.length > 0 && rows[0].length === 1) {
             const firstCell = rows[0][0];
-            // On vérifie si la première cellule contient bien le séparateur détecté (ex: ';')
             if (typeof firstCell === 'string' && firstCell.includes(separator)) {
                 console.log(`[FIX] Format 'Ligne entière entre guillemets' détecté. Correction de la structure...`);
                 
                 // On redécoupe manuellement chaque ligne
                 rows = rows.map(row => {
-                    // Si la ligne a bien été lue comme une seule colonne string
                     if (row.length === 1 && typeof row[0] === 'string') {
-                        // On découpe en utilisant le séparateur qu'on avait détecté plus tôt
-                        // PapaParse a déjà retiré les guillemets extérieurs, donc c'est propre.
                         return row[0].split(separator);
                     }
                     return row;
                 });
             }
         }
-        // --- FIN DU CORRECTIF ROBUSTE ---
+        // FIN DU CORRECTIF ROBUSTE ---
 
         // 🛑 AJOUT 1: Capture des comptes initiaux (TOTAL LIGNES ET COLONNES)
         const originalRowsCount = rows.length; 
@@ -102,18 +96,24 @@ export async function cleanCsv(fileBuffer, csvOutputFilename, reportOutputFilena
 
         // Déterminer les index des colonnes à nettoyer spécifiquement
         const columnIndex = headers.map(h => h.toLowerCase());
-        const dateIndex = columnIndex.findIndex(h => h.includes('date'));
-        const montantIndex = columnIndex.findIndex(h => h.includes('montant') || h.includes('amount'));
-
+        const dateIndex = columnIndex.findIndex(h => /date|created_at|time/i.test(h));
+        const montantIndex = columnIndex.findIndex(h => /montant|amount|price|prix|total/i.test(h));
+        const emailIndex = columnIndex.findIndex(h => /email|mail|e-mail/i.test(h));
+        const cpIndex = columnIndex.findIndex(h => /^(cp|zip|code\s?postal)$/i.test(h));
+        const phoneRegex = /tél|tel|phone|mobile|portable|gsm/i;
+        const nameRegex = /nom|name|prenom|firstname|lastname|ville|city|societe|company|pays|country/i;
+        const nameIndices = headers
+            .map((h, i) => nameRegex.test(h) ? i : -1)
+            .filter(i => i !== -1);
+        
         // 4. Boucle de nettoyage
         rows = rows.map((row, rowIndex) =>
             row.map((cell, colIndex) => {
-                // Pour la ligne d'en-tête, on la saute
                 if (rowIndex === 0 || !cell) return cell;
 
                 let original = cell;
                 let value = cell.trim();
-                let fixed = value; // Variable pour stocker la valeur corrigée temporairement
+                let fixed = value;
 
                 // 4.1 Nettoyage Général (appliqué à toutes les cellules sauf l'en-tête)
                 value = value.replace(/^\+([A-Za-z])/, "$1"); // Corriger erreurs ville genre "+Atampes"
@@ -163,9 +163,9 @@ export async function cleanCsv(fileBuffer, csvOutputFilename, reportOutputFilena
                 }
 
                 // EMAIL
-                else if (headers[colIndex] && headers[colIndex].toLowerCase().includes("email")) {
+                else if (colIndex === emailIndex) {
                     fixed = value
-                        .replace(/@\s+@+/g, "@") // plusieurs @
+                        .replace(/@+/g, "@") // plusieurs @
                         .replace(/\.\.+/g, ".") // plusieurs ..
                         .replace(/\s/g, ""); // espaces
                     if (fixed !== value) {
@@ -181,11 +181,23 @@ export async function cleanCsv(fileBuffer, csvOutputFilename, reportOutputFilena
                 }
 
                 // TÉLÉPHONE
-                else if (headers[colIndex] && headers[colIndex].toLowerCase().includes("tel")) {
-                    let digits = value.replace(/\D/g, ""); // garder que chiffres
+                else if (headers[colIndex] && phoneRegex.test(headers[colIndex])) {
+                    let digits = value.replace(/\D/g, ""); // garder que chiffres (enlève +, espaces, parenthèses)
+                    
                     if (digits.length >= 9) {
-                        if (digits.startsWith("0") && digits.length >= 10) { digits = "33" + digits.slice(1); }
+                        // --- AJOUT : Correction du +33(0) ---
+                        // Si le nombre nettoyé commence par 330 (ex: 3306...), on enlève le 0
+                        if (digits.startsWith("330")) {
+                            digits = "33" + digits.slice(3); 
+                        }
+
+                        // Ta logique existante (06 -> 336)
+                        if (digits.startsWith("0") && digits.length >= 10) { 
+                            digits = "33" + digits.slice(1); 
+                        }
+                        
                         fixed = "+" + digits;
+                        
                         if (fixed !== value) {
                             report.push({
                                 row: rowIndex,
@@ -196,6 +208,29 @@ export async function cleanCsv(fileBuffer, csvOutputFilename, reportOutputFilena
                             });
                             value = fixed;
                         }
+                    }
+                }
+
+                // NOUVEAU : CODE POSTAL
+                else if (colIndex === cpIndex) {
+                    fixed = normalizePostalCode(value);
+                    if (fixed !== value) {
+                        report.push({
+                            row: rowIndex,
+                            column: headers[colIndex] || `col_${colIndex}`,
+                            before: original,
+                            after: fixed,
+                            reason: "Code postal corrigé (ajout du 0 manquant)"
+                        });
+                        value = fixed;
+                    }
+                }
+
+                // E. NOMS PROPRES (✅ NOUVELLE FONCTIONNALITÉ)
+                else if (nameIndices.includes(colIndex)) {
+                    fixed = normalizeName(value);
+                    if (fixed !== original) {
+                        value = fixed;
                     }
                 }
                 
@@ -217,6 +252,22 @@ export async function cleanCsv(fileBuffer, csvOutputFilename, reportOutputFilena
                         });
                     }
                 }
+
+                // SÉCURITÉ : Anti-CSV Injection
+                // Si une cellule commence par =, +, -, @ on ajoute une apostrophe
+                if (typeof value === 'string' && /^[=\+\-@]/.test(value)) {
+                    
+                    // EXCEPTION : Si c'est juste un numéro (Téléphone ou Math)
+                    // On regarde s'il n'y a QUE des chiffres, espaces, points ou virgules après le signe.
+                    // Une formule malveillante contient forcément des lettres (ex: +CMD, +SUM, -DDE)
+                    const isSafeNumber = /^[\+\-][\d\s\.\,]*$/.test(value);
+
+                    // Si ce n'est PAS un nombre sûr (donc ça contient des lettres ou symboles bizarres), on protège.
+                    if (!isSafeNumber) {
+                        value = "'" + value; 
+                    }
+                }
+
                 return value;
             })
         );
