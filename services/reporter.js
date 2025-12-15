@@ -58,6 +58,7 @@ export function analyzeReport(report, originalRowsCount, cleanedRowsCount, origi
         emailCorrections: 0,
         phoneCorrections: 0,
         generalFixes: 0,
+        encodingFixed: false, // Nouveau indicateur
         rowsAffected: new Set(),
     };
 
@@ -66,10 +67,16 @@ export function analyzeReport(report, originalRowsCount, cleanedRowsCount, origi
             stats.rowsAffected.add(change.row);
         }
         
-        if (change.reason.includes("date normalisée")) stats.dateNormalizations++;
+        // --- DÉTECTION DE L'ENCODAGE DANS LE RAPPORT ---
+        if (change.column === "METADATA" && change.reason.includes("Conversion de l'encodage")) {
+            stats.encodingFixed = true;
+        }
+
+        else if (change.reason.includes("date normalisée")) stats.dateNormalizations++;
         else if (change.reason.includes("montant normalisé")) stats.amountNormalizations++;
         else if (change.reason.includes("email auto-corrigé")) stats.emailCorrections++;
         else if (change.reason.includes("téléphone normalisé")) stats.phoneCorrections++;
+        else if (change.reason.includes("Code postal corrigé")) stats.postalCodeCorrections = (stats.postalCodeCorrections || 0) + 1; // Ajout
         else if (change.reason.includes("nettoyage général")) stats.generalFixes++;
         // Distinction des suppressions
         else if (change.reason.includes("Ligne vide")) stats.rowsRemovedVides++;
@@ -92,13 +99,20 @@ export function analyzeReport(report, originalRowsCount, cleanedRowsCount, origi
     // Clarification de l'Impact Global
     const impactMessageText = totalRowsAffected > 0 
         ? `L'opération a touché un total de <strong>${formatNumber(totalRowsAffected)} lignes uniques</strong> (lignes de données affectées par au moins une correction ou suppression).<br><br>`
-        : `L'opération n'a détecté aucune valeur à corriger, le fichier était parfait.`;
+        : `L'opération n'a détecté aucune valeur à corriger, le fichier était parfait.<br><br>`;
+
+
+    // --- NOUVEAU : Phrase spéciale Encodage ---
+    let encodingMessage = "";
+    if (stats.encodingFixed) {
+        encodingMessage = `<strong>Encodage corrigé :</strong> Votre fichier était au format Excel/Ancien. Il a été converti en format Universel pour sécuriser les accents.<br><br>`;
+    }
 
     // 1. Détermination du message initial
-    if (totalRowsAffected === 0 && stats.rowsRemoved === 0 && stats.columnAddedCurrency === 0) {
-        humanSummary = `<strong>Votre fichier était parfait !<strong><br>`;
+    if (totalRowsAffected === 0 && stats.rowsRemoved === 0 && stats.columnAddedCurrency === 0 && !stats.encodingFixed) {
+        humanSummary = `<strong>Votre fichier était parfait !</strong><br>`;
     } else {
-        humanSummary = `<strong>Nettoyage terminé !</strong><br> ${impactMessageText}`;
+        humanSummary = `<strong>Nettoyage terminé !</strong><br> ${impactMessageText} ${encodingMessage}`;
     }
 
 
@@ -106,13 +120,13 @@ export function analyzeReport(report, originalRowsCount, cleanedRowsCount, origi
     
     // a) Colonnes (Structurel)
     if (stats.columnAddedCurrency > 0) {
-        groupB_Actions.push(`<strong>Modification structurelle :</strong> La colonne "Devise" a été insérée à côté du montant.`);
+        groupB_Actions.push(`<strong>Modification Structurelle :</strong> La colonne "Devise" a été insérée à côté du montant.`);
     }
 
     // b) Suppressions (Structurel sur les lignes)
     if (stats.rowsRemoved > 0) {
         let detail = `${formatNumber(stats.rowsRemoved)} lignes ont été retirées (Doublons: ${formatNumber(stats.rowsRemovedDoublons)}, Vides: ${formatNumber(stats.rowsRemovedVides)}).`;
-        groupB_Actions.push(`<strong>Suppressions de lignes :</strong> ${detail}`);
+        groupB_Actions.push(`<strong>Suppressions de Lignes :</strong> ${detail}`);
     }
 
     // c) Corrections de Valeurs (Cellulaire)
@@ -121,10 +135,11 @@ export function analyzeReport(report, originalRowsCount, cleanedRowsCount, origi
     if (stats.amountNormalizations > 0) correctionsDetails.push(`${formatNumber(stats.amountNormalizations)} montants normalisés.`);
     if (stats.emailCorrections > 0) correctionsDetails.push(`${formatNumber(stats.emailCorrections)} e-mails formatés.`);
     if (stats.phoneCorrections > 0) correctionsDetails.push(`${formatNumber(stats.phoneCorrections)} téléphones normalisés.`);
+    if (stats.postalCodeCorrections > 0) correctionsDetails.push(`${formatNumber(stats.postalCodeCorrections)} codes postaux réparés.`);
     if (stats.generalFixes > 0) correctionsDetails.push(`${formatNumber(stats.generalFixes)} corrections générales.`);
 
     if (correctionsDetails.length > 0) {
-        groupB_Actions.push(`<strong>Normalisation des valeurs :</strong> ${correctionsDetails.join(' | ')}.`);
+        groupB_Actions.push(`<strong>Normalisation des Valeurs :</strong> ${correctionsDetails.join(' | ')}.`);
     }
 
     // 3. Assemblage des blocs pour l'affichage final
@@ -143,7 +158,7 @@ export function analyzeReport(report, originalRowsCount, cleanedRowsCount, origi
     if (groupB_Actions.length > 0) {
          const actionList = groupB_Actions.map(c => `<li>${c}</li>`).join('');
          humanSummary += `
-            <h3>Détails des actions : <br></h3>
+            <h3>Détails des actions :<br></h3>
             <ul class="report-list">
                 ${actionList}
             </ul>

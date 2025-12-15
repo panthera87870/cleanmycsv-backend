@@ -51,83 +51,91 @@ export function normalizeAmount(value) {
 }
 
 /**
- * Normalise les formats de date courants en ISO 8601 (AAAA-MM-JJ).
- * Gère JJ/MM/AAAA, YYYY-MM-DD, DD-MON-YY.
- * @param {string} value - La valeur de la date.
- * @returns {string} La date normalisée (AAAA-MM-JJ) ou la valeur d'origine si impossible.
+ * Normalise intelligemment une date vers le format ISO (AAAA-MM-JJ).
+ * Gère : DD/MM/YY, YY-MM-DD, DD.MM.AAAA, Textes (Jan, Fév)...
  */
 export function normalizeDate(value) {
     if (!value) return '';
-
-    const MONTHS = {
-        'JAN': '01', 'FEB': '02', 'MAR': '03', 'APR': '04', 'MAY': '05', 'JUN': '06',
-        'JUL': '07', 'AUG': '08', 'SEP': '09', 'OCT': '10', 'NOV': '11', 'DEC': '12'
-    };
-
-    let parts;
-
-    // Format 1: JJ/MM/AAAA (ou JJ-MM-AAAA)
-    if (value.match(/^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4}$/)) {
-        parts = value.split(/[\/\-]/);
-        if (parts.length === 3) {
-            const [d, m, y] = parts;
-            return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
-        }
-    }
     
-    // Format 2: AAAA-MM-JJ (Format ISO, on le conserve)
-    if (value.match(/^\d{4}-\d{2}-\d{2}$/)) {
-        return value;
-    }
-    // --- AJOUT : Format AAAA/MM/JJ (ex: 2023/02/20) ---
-    // On remplace simplement les slashes par des tirets pour le rendre ISO
-    if (value.match(/^\d{4}\/\d{2}\/\d{2}$/)) {
-        return value.replace(/\//g, "-");
-    }
+    // Nettoyage de base
+    let clean = value.trim().toUpperCase();
 
-    // Format 3: DD-MON-YY (ex: 6-MAR-12 ou 06-MAR-2012)
-    if (value.match(/^\d{1,2}[-\/][A-Z]{3}[-\/]\d{2,4}$/i)) {
-        parts = value.split(/[\/\-]/);
-        if (parts.length === 3) {
-            let [d, mon, y] = parts;
-            mon = mon.toUpperCase();
-            
-            if (y.length === 2) { // Année sur 2 chiffres
-                y = (parseInt(y) < 50 ? '20' : '19') + y;
-            }
-
-            if (MONTHS[mon]) {
-                return `${y}-${MONTHS[mon]}-${d.padStart(2, '0')}`;
-            }
-        }
-    }
-
-    // Format 4 : JJ.MM.AAAA (ex: 25.12.2023)
-    if (value.match(/^\d{2}\.\d{2}\.\d{4}$/)) {
-        // On remplace les points par des tirets et on inverse pour ISO
-        parts = value.split('.');
-        const [d, m, y] = parts;
-        return `${y}-${m}-${d}`;
-    }
-    
-    // Format 5 : Nombre Excel (ex: 45290 pour une date récente)
-    // On vérifie si c'est un nombre à 5 chiffres (dates entre 1927 et 2173)
-    if (value.match(/^\d{5}$/)) {
-        const serial = parseInt(value);
-        // Formule magique pour convertir le serial Excel en Date JS
-        // (Excel commence le 30/12/1899 techniquement à cause d'un bug d'année bissextile en 1900)
+    // 0. Gérer Excel Serial (le nombre magique ex: 45290)
+    if (/^\d{5}$/.test(clean)) {
+        const serial = parseInt(clean);
         const date = new Date(Math.round((serial - 25569) * 86400 * 1000));
-        
-        // Vérifions que ça donne une date valide
         if (!isNaN(date.getTime())) {
-            const y = date.getFullYear();
-            const m = String(date.getMonth() + 1).padStart(2, '0');
-            const d = String(date.getDate()).padStart(2, '0');
-            return `${y}-${m}-${d}`;
+            return date.toISOString().split('T')[0];
         }
     }
 
-    // Si aucune logique ne fonctionne, on retourne la valeur d'origine
+    // 1. Gérer les mois textuels (ex: "5 Jan 2023" ou "05-FEV-23")
+    // On remplace le texte par le chiffre correspondant pour simplifier la suite
+    const MONTHS = {
+        'JAN': '01', 'FEB': '02', 'FÉV': '02', 'FEV': '02', 'MAR': '03', 'APR': '04', 
+        'AVR': '04', 'MAY': '05', 'MAI': '05', 'JUN': '06', 'JUI': '06', 'JUL': '07', 
+        'JUIL': '07', 'AUG': '08', 'AOU': '08', 'AOÛ': '08', 'SEP': '09', 'OCT': '10', 
+        'NOV': '11', 'DEC': '12', 'DÉC': '12'
+    };
+    
+    // On cherche si un mois texte est présent et on le remplace
+    for (const [txt, num] of Object.entries(MONTHS)) {
+        if (clean.includes(txt)) {
+            clean = clean.replace(txt, num);
+            break; // On a trouvé, on arrête
+        }
+    }
+
+    // 2. UNIFICATION : On remplace tous les séparateurs (/, ., espace) par des tirets
+    // Ex: "24.02.01" devient "24-02-01"
+    // Ex: "2023/01/01" devient "2023-01-01"
+    clean = clean.replace(/[\/\.\s]/g, '-');
+
+    // 3. ANALYSE STRUCTURELLE
+    const parts = clean.split('-');
+
+    // On ne traite que si on a bien 3 morceaux (Jour, Mois, Année)
+    if (parts.length === 3) {
+        let [p1, p2, p3] = parts;
+        let y, m, d;
+
+        // Cas A : L'année est au début (AAAA-MM-JJ ou YY-MM-DD)
+        // Critère : p1 est grand (> 31) OU p1 a 4 chiffres
+        if (p1.length === 4 || parseInt(p1) > 31) {
+            y = p1;
+            m = p2;
+            d = p3;
+        } 
+        // Cas B : L'année est à la fin (JJ-MM-AAAA ou JJ-MM-YY) -> Standard Français
+        else {
+            d = p1;
+            m = p2;
+            y = p3;
+        }
+
+        // 4. GESTION DES ANNÉES À 2 CHIFFRES (Règle du Pivot)
+        if (y.length === 2) {
+            const yInt = parseInt(y);
+            // Si < 50, on suppose 20xx (ex: 24 -> 2024)
+            // Si >= 50, on suppose 19xx (ex: 99 -> 1999)
+            y = (yInt < 50 ? '20' : '19') + y;
+        }
+
+        // 5. Validation et Formatage final
+        // On s'assure que tout est numérique
+        if (!isNaN(y) && !isNaN(m) && !isNaN(d)) {
+            // Padding (ex: 1 -> 01)
+            const mm = m.padStart(2, '0');
+            const dd = d.padStart(2, '0');
+            
+            // Vérification basique de validité (Mois entre 1 et 12)
+            if (parseInt(mm) >= 1 && parseInt(mm) <= 12 && parseInt(dd) >= 1 && parseInt(dd) <= 31) {
+                return `${y}-${mm}-${dd}`;
+            }
+        }
+    }
+
+    // Si rien n'a marché, on renvoie la valeur d'origine (fallback)
     return value;
 }
 
@@ -177,26 +185,34 @@ export function normalizeName(value) {
 }
 
 /**
- * Détecte le séparateur le plus probable d'un CSV. NEW
+ * Détecte le séparateur le plus probable avec une préférence pour le point-virgule (standard FR).
  */
 export function detectSeparator(content) {
-    // On prend juste les premières lignes pour aller vite et éviter les biais
-    const snippet = content.slice(0, 5000); 
+    // On prend un échantillon plus large (10k caractères) pour être sûr
+    const snippet = content.slice(0, 10000); 
     
-    const candidates = [",", ";", "\t", "|"];
+    const candidates = [
+        { char: ";", weight: 1.1 }, // Bonus x1.1 pour le standard français
+        { char: ",", weight: 1.0 },
+        { char: "\t", weight: 1.0 },
+        { char: "|", weight: 1.0 }
+    ];
     
-    // On compte simplement combien de fois chaque séparateur apparaît
-    const counts = candidates.map(sep => ({
-        sep,
-        // On découpe la chaîne par le séparateur et on compte les morceaux (-1)
-        count: snippet.split(sep).length - 1
-    }));
+    // On compte et on applique le poids
+    const counts = candidates.map(c => {
+        // Astuce performante pour compter les occurrences sans regex lourde
+        const count = snippet.split(c.char).length - 1;
+        return {
+            sep: c.char,
+            score: count * c.weight // Le score inclut le bonus
+        };
+    });
 
-    // On trie pour avoir le gagnant en premier
-    counts.sort((a, b) => b.count - a.count);
+    // On trie par score décroissant (le plus grand en premier)
+    counts.sort((a, b) => b.score - a.score);
 
-    console.log("Séparateurs détectés:", counts); // Pour le débogage serveur
+    console.log("[DEBUG] Scores séparateurs:", counts.map(c => `${c.sep}=${c.score.toFixed(1)}`)); 
 
-    // Si aucun séparateur n'est trouvé (count 0), on fallback sur la virgule
-    return counts[0].count > 0 ? counts[0].sep : ",";
+    // Si le vainqueur a un score de 0 (cas fichier vide ou bizarre), on fallback sur la virgule
+    return counts[0].score > 0 ? counts[0].sep : ",";
 }

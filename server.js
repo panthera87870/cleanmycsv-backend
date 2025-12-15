@@ -94,7 +94,7 @@ if (!fsStandard.existsSync(OUTPUTS_DIR)) fsStandard.mkdirSync(OUTPUTS_DIR);
 // CONFIGURATION MULTER SÉCURISÉE
 const upload = multer({ 
     storage: multer.memoryStorage(), 
-    limits: { fileSize: 50 * 1024 * 1024 } 
+    limits: { fileSize: 15 * 1024 * 1024 } 
 });
 
 // --- ROUTES ---
@@ -153,7 +153,7 @@ app.post("/clean-file", upload.single("csv_file_to_clean"), async (req, res) => 
 
         originalRowsCount = result.originalRowsCount; 
         originalColumnCount = result.originalColumnCount; 
-
+        
         const tempReportPath = join(OUTPUTS_DIR, tempReportFileName);
         const reportRaw = await fs.readFile(tempReportPath, 'utf-8');
         const summary = analyzeReport(JSON.parse(reportRaw), originalRowsCount, result.cleaned.length, originalColumnCount);
@@ -171,7 +171,7 @@ app.post("/clean-file", upload.single("csv_file_to_clean"), async (req, res) => 
         console.error("ERREUR /clean-file:", err.message);
 
         if (err.code === 'LIMIT_FILE_SIZE') {
-             return res.status(400).json({ success: false, message: "Le fichier est trop volumineux (Max 50Mo)." });
+             return res.status(400).json({ success: false, message: "Le fichier est trop volumineux (Max 15Mo)." });
         }
         res.status(500).json({ success: false, message: "Erreur serveur." });
 
