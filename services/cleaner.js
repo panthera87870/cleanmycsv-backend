@@ -1,8 +1,6 @@
 import Papa from "papaparse";
-import chardet from "chardet";
 import iconv from "iconv-lite";
-import fs from "fs/promises";
-import { join } from "path";
+// 🗑️ SUPPRESSION : imports 'fs' et 'path' (Inutiles : on ne touche plus au disque dur)
 import { 
     normalizeAmount, 
     normalizeDate, 
@@ -11,21 +9,20 @@ import {
     normalizeName 
 } from "./normalizers.js"; 
 
-// 🆕 AMÉLIORATION 1 : Limite de sécurité pour éviter un JSON de 50 Mo
 const MAX_REPORT_DETAILS = 1000; 
 
 /**
- * Nettoie un fichier CSV (Buffer) et génère un rapport.
+ * Nettoie un fichier CSV (Buffer) et renvoie le contenu nettoyé + le rapport.
+ * Ne sauvegarde plus rien sur le disque.
  */
-export async function cleanCsv(fileBuffer, csvOutputFilename, reportOutputFilename, OUTPUT_DIR) {
+// 🔄 MODIF : On enlève les paramètres de noms de fichiers, on garde juste le buffer
+export async function cleanCsv(fileBuffer) {
     
-    const finalCsvPath = join(OUTPUT_DIR, csvOutputFilename);
-    const finalReportPath = join(OUTPUT_DIR, reportOutputFilename);
+    // 🗑️ SUPPRESSION : variables finalCsvPath et finalReportPath
 
     const report = [];
     const extractedCurrencies = {};
 
-    // Helper pour ajouter au rapport sans exploser la mémoire
     const safeReportPush = (entry) => {
         if (report.length < MAX_REPORT_DETAILS) {
             report.push(entry);
@@ -38,66 +35,38 @@ export async function cleanCsv(fileBuffer, csvOutputFilename, reportOutputFilena
                 reason: "⚠️ Limite d'affichage atteinte (1000+ corrections). Le nettoyage continue mais les détails ne sont plus listés."
             });
         }
-        // On continue de nettoyer, mais on arrête de logger les détails.
     };
 
     try {
-        // --- 1. DÉTECTION ET DÉCODAGE ROBUSTE (V2 : UTF-8 > Win1252 > MacRoman) ---
+        // --- 1. DÉTECTION ET DÉCODAGE --- (Identique à avant)
         let content;
         let detectedEncoding = "UTF-8";
 
-        // Étape A: Essai strict en UTF-8
         const contentUtf8 = iconv.decode(fileBuffer, "utf8");
-        // On compte les caractères de remplacement (les losanges )
         const errorsUtf8 = (contentUtf8.match(/\uFFFD/g) || []).length;
 
         if (errorsUtf8 === 0) {
-            // C'est du propre
             content = contentUtf8;
             detectedEncoding = "UTF-8";
         } else {
-            // Étape B: Fallback Windows-1252 (Standard Excel France)
             const contentAnsi = iconv.decode(fileBuffer, "win1252");
             const errorsAnsi = (contentAnsi.match(/\uFFFD/g) || []).length;
 
             if (errorsAnsi === 0) {
-                // Windows-1252 est propre
                 content = contentAnsi;
                 detectedEncoding = "Windows-1252";
-                
-                safeReportPush({ 
-                    row: 0, 
-                    column: "METADATA", 
-                    before: "Format Excel (Ancien)", 
-                    after: "Format Universel (UTF-8)", 
-                    reason: "Conversion de l'encodage pour garantir l'affichage des accents." 
-                });
+                safeReportPush({ row: 0, column: "METADATA", before: "Format Excel (Ancien)", after: "Format Universel (UTF-8)", reason: "Conversion de l'encodage pour garantir l'affichage des accents." });
             } else {
-                // 🆕 AMÉLIORATION 2 : Ajout du Fallback MacRoman (Pour les vieux fichiers Apple)
                 console.log(`[ENCODAGE] Win1252 a des erreurs (${errorsAnsi}). Tentative MacRoman...`);
                 const contentMac = iconv.decode(fileBuffer, "macroman");
-                
-                // On prend MacRoman en dernier recours
                 content = contentMac;
                 detectedEncoding = "MacRoman";
-
-                safeReportPush({ 
-                    row: 0, 
-                    column: "METADATA", 
-                    before: "Format Apple (Legacy)", 
-                    after: "Format Universel (UTF-8)", 
-                    reason: "Conversion de l'encodage Mac pour garantir l'affichage des accents." 
-                });
+                safeReportPush({ row: 0, column: "METADATA", before: "Format Apple (Legacy)", after: "Format Universel (UTF-8)", reason: "Conversion de l'encodage Mac pour garantir l'affichage des accents." });
             }
         }
 
-        console.log(`[DEBUG] Encodage final retenu : ${detectedEncoding}`);
-
-        // 2. Détection du séparateur
+        // --- 2. SEPARATEUR & PARSING --- (Identique)
         const separator = detectSeparator(content);
-        console.log(`[DEBUG] Séparateur gagnant : "${separator}"`);
-
-        // 3. Parsing
         let parsed;
         try {
             parsed = Papa.parse(content, {
@@ -110,17 +79,15 @@ export async function cleanCsv(fileBuffer, csvOutputFilename, reportOutputFilena
         }
 
         if (parsed.errors.length > 0) {
-            console.error("Erreurs PapaParse:", parsed.errors);
             throw new Error(`Le fichier CSV est mal formaté (ligne ${parsed.errors[0].row + 1}): ${parsed.errors[0].message}`);
         }
 
         let rows = parsed.data;
 
-        // Fix "Faux CSV" (Ligne entière entre guillemets)
+        // --- FIX : Ligne entière entre guillemets --- (Identique)
         if (rows.length > 0 && rows[0].length === 1) {
             const firstCell = rows[0][0];
             if (typeof firstCell === 'string' && firstCell.includes(separator)) {
-                console.log(`[FIX] Format 'Ligne entière entre guillemets' détecté.`);
                 rows = rows.map(row => {
                     if (row.length === 1 && typeof row[0] === 'string') {
                         return row[0].split(separator);
@@ -133,12 +100,12 @@ export async function cleanCsv(fileBuffer, csvOutputFilename, reportOutputFilena
         const originalRowsCount = rows.length; 
         const originalColumnCount = rows.length > 0 ? rows[0].length : 0;
 
-        // 🆕 AMÉLIORATION 3 : Nettoyage des En-têtes (Trim + suppression BOM)
-        // Indispensable pour éviter que "Email " ne matche pas "Email" dans un CRM
+        // LOGIQUE METIER NETTOYAGE
+
         let headers = rows[0] || [];
         if (headers.length > 0) {
             headers = headers.map(h => h ? h.toString().trim().replace(/^[\ufeff]/, '') : '');
-            rows[0] = headers; // On remet les headers propres dans les données
+            rows[0] = headers;
         }
 
         // Déterminer les index (Logique existante conservée)
@@ -357,17 +324,23 @@ export async function cleanCsv(fileBuffer, csvOutputFilename, reportOutputFilena
             finalRows.push(row);
         }
         
-        // 8. Sauvegarde
+        // 8. Préparation de la sortie
         const utf8Bom = '\ufeff'; 
-        const cleanCsvContent = Papa.unparse(finalRows, { delimiter: separator });
+        
+        // On transforme le tableau JS en texte CSV
+        const csvString = Papa.unparse(finalRows, { delimiter: separator });
+        
+        // On ajoute le BOM pour Excel
+        const finalCsvContent = utf8Bom + csvString;
 
-        await fs.writeFile(finalCsvPath, utf8Bom + cleanCsvContent, 'utf8');
-        await fs.writeFile(finalReportPath, JSON.stringify(report, null, 2), 'utf-8');
+        // 🗑️ SUPPRESSION : fs.writeFile(...)
 
+        // 🔄 RETOUR : On renvoie un OBJET complet au serveur
         return { 
-            cleaned: finalRows, 
-            report: report,
+            csvContent: finalCsvContent,      // Le contenu du fichier (String)
+            reportData: report,               // Le rapport brut (Tableau JSON)
             originalRowsCount: originalRowsCount,     
+            cleanedRowsCount: finalRows.length, 
             originalColumnCount: originalColumnCount  
         };
 

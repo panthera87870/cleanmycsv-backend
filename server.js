@@ -1,14 +1,12 @@
 import express from "express";
 import cors from "cors"; 
+import { Storage } from "@google-cloud/storage"; // ✅ AJOUT : Import du SDK Google Storage
 import multer from "multer";
 import compression from "compression";
-import fsStandard from "fs"; 
-import fs from "fs/promises";
-
-import { dirname, join } from "path";
-import { fileURLToPath } from "url";
 import { randomUUID } from "crypto"; 
 import helmet from "helmet"; 
+
+// 🗑️ SUPPRESSION : fs, path, url (Inutiles car on ne stocke plus rien en local)
 
 import { cleanCsv } from "./services/cleaner.js";
 import { 
@@ -17,11 +15,12 @@ import {
 } from "./services/reporter.js";
 
 const app = express();
-const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// --- CONFIGURATION STORAGE ---
+const storage = new Storage(); // Cloud Run détecte les infos automatiquement
+const bucketName = "cleanmycsv-temp-stockage-prod"; // <--- ⚠️ À REMPLIR
 
 // --- SPÉCIFIQUE CLOUD RUN (PROD) ---
-// Indispensable car Cloud Run gère le SSL (HTTPS) via un Load Balancer.
-// Sans ça, Express pense qu'il est en HTTP et HSTS ne fonctionne pas.
 app.enable('trust proxy'); 
 
 const allowedOrigins = [
@@ -37,36 +36,17 @@ app.use(helmet({
     contentSecurityPolicy: {
         directives: {
             defaultSrc: ["'self'"], 
-            
-            // Scripts : Uniquement tes fichiers JS locaux
             scriptSrc: ["'self'"], 
-            
-            // Styles : Ton CSS + Google Fonts + FontAwesome CDN
-            styleSrc: [
-                "'self'", 
-                "https://fonts.googleapis.com",
-                "https://cdnjs.cloudflare.com" 
-            ],
-            
-            // Polices : Google Fonts + FontAwesome CDN
-            fontSrc: [
-                "'self'", 
-                "https://fonts.gstatic.com",
-                "https://cdnjs.cloudflare.com"
-            ],
-            
-            // Images : Tes images locales + images base64 (data:)
+            styleSrc: ["'self'", "https://fonts.googleapis.com", "https://cdnjs.cloudflare.com"],
+            fontSrc: ["'self'", "https://fonts.gstatic.com", "https://cdnjs.cloudflare.com"],
             imgSrc: ["'self'", "data:"], 
-            
-            // Connexions AJAX : Uniquement vers ton serveur
-            connectSrc: ["'self'"], 
-            
+            // ✅ MODIF : On autorise la connexion au storage Google
+            connectSrc: ["'self'", "https://storage.googleapis.com"], 
             frameAncestors: ["'none'"],
             objectSrc: ["'none'"],
             upgradeInsecureRequests: [],
         },
     },
-    // 🔥 HSTS ACTIVÉ EN PROD (Force le HTTPS pendant 1 an)
     hsts: {
         maxAge: 31536000, 
         includeSubDomains: true,
@@ -74,7 +54,7 @@ app.use(helmet({
     }
 }));
 
-// Configuration CORS (On garde ta config de prod)
+// Configuration CORS
 app.use(cors({ 
     origin: function (origin, callback) {
         if (!origin || allowedOrigins.includes(origin)) {
@@ -85,13 +65,9 @@ app.use(cors({
     }
 }));
 
-const OUTPUTS_DIR = join(__dirname, "outputs");
-const STALE_TIME_MS = 30 * 60 * 1000; // 30 minutes
-const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+// 🗑️ SUPPRESSION : OUTPUTS_DIR, STALE_TIME, mkdirSync (Plus de dossier local)
 
-if (!fsStandard.existsSync(OUTPUTS_DIR)) fsStandard.mkdirSync(OUTPUTS_DIR);
-
-// CONFIGURATION MULTER SÉCURISÉE
+// CONFIGURATION MULTER (Mémoire uniquement)
 const upload = multer({ 
     storage: multer.memoryStorage(), 
     limits: { fileSize: 15 * 1024 * 1024 } 
@@ -99,112 +75,84 @@ const upload = multer({
 
 // --- ROUTES ---
 
-// ROUTE 1: Téléchargement 
-app.get("/download/:filename", async (req, res) => { 
-    const filename = req.params.filename;
-    
-    if (filename.includes("..")) return res.status(400).send("Nom de fichier invalide.");
-    const filePath = join(OUTPUTS_DIR, filename);
+// 🗑️ SUPPRESSION COMPLÈTE DE LA ROUTE "GET /download/:filename"
+// Raison : C'est Google qui va gérer le téléchargement via une URL sécurisée directe.
 
-    try {
-        await fs.stat(filePath); 
-
-        const isCsv = filename.endsWith('.csv'); 
-        const publicDownloadName = req.query.publicName || filename;
-
-        res.setHeader("Content-Disposition", `attachment; filename="${publicDownloadName}"`);
-        res.setHeader("Content-Type", isCsv ? "text/csv" : "application/json");
-
-        const fileStream = fsStandard.createReadStream(filePath);
-        fileStream.pipe(res);
-        fileStream.on("close", async () => {
-            try { await fs.unlink(filePath); } catch (cleanupErr) { console.error(`Erreur cleanup ${filename}:`, cleanupErr.message); }
-        });
-        
-        fileStream.on("error", (err) => { res.status(500).end(); });
-
-    } catch (err) {
-        res.status(404).send("Fichier non trouvé ou expiré.");
-    }
-});
-
-// ROUTE 2: Upload et Nettoyage
+// ROUTE : Upload et Nettoyage
 app.post("/clean-file", upload.single("csv_file_to_clean"), async (req, res) => {
-    let originalRowsCount = 0;
-    let originalColumnCount = 0;
-    const originalFileName = req.file?.originalname; 
-    
-    let tempCsvFileName;
-    let tempReportFileName;
-
     try {
         if (!req.file) throw new Error("Aucun fichier n'a été téléversé.");
         
+        // 1. On prépare les jolis noms pour l'utilisateur
+        const publicNames = generateCleanFilenames(req.file.originalname);
         const fileBuffer = req.file.buffer; 
-        const publicNames = generateCleanFilenames(originalFileName);
 
-        const tempUuid = randomUUID();
-        tempCsvFileName = `clean-${tempUuid}.csv`;
-        tempReportFileName = `report-${tempUuid}.json`;
+        // 2. On lance le nettoyage
+        // 'result' contient TOUT : le csv propre, le rapport json, et les stats
+        const result = await cleanCsv(fileBuffer);
 
-        const result = await cleanCsv(fileBuffer, tempCsvFileName, tempReportFileName, OUTPUTS_DIR);
+        // Identifiant unique pour ce nettoyage
+        const fileId = randomUUID();
 
-        req.file.buffer = null; 
-
-        originalRowsCount = result.originalRowsCount; 
-        originalColumnCount = result.originalColumnCount; 
+        // --- A. GESTION DU CSV (Fichier propre) ---
+        const csvBlob = storage.bucket(bucketName).file(`clean-${fileId}.csv`);
         
-        const tempReportPath = join(OUTPUTS_DIR, tempReportFileName);
-        const reportRaw = await fs.readFile(tempReportPath, 'utf-8');
-        const summary = analyzeReport(JSON.parse(reportRaw), originalRowsCount, result.cleaned.length, originalColumnCount);
+        // On envoie le CSV dans le bucket
+        await csvBlob.save(result.csvContent, { contentType: 'text/csv', resumable: false });
 
+        // On crée le lien de téléchargement pour le CSV
+        const [csvUrl] = await csvBlob.getSignedUrl({
+            action: 'read',
+            expires: Date.now() + 15 * 60 * 1000, // Lien valide 15 min
+            promptSaveAs: publicNames.cleanCsvName // Force le nom "mon-fichier-clean.csv"
+        });
+
+        // --- B. GESTION DU RAPPORT JSON (Ce qu'il manquait) ---
+        const reportBlob = storage.bucket(bucketName).file(`report-${fileId}.json`);
+        
+        // On envoie le JSON dans le bucket
+        await reportBlob.save(JSON.stringify(result.reportData, null, 2), { 
+            contentType: 'application/json', 
+            resumable: false 
+        });
+
+        // On crée le lien de téléchargement pour le JSON
+        const [reportUrl] = await reportBlob.getSignedUrl({
+            action: 'read',
+            expires: Date.now() + 15 * 60 * 1000,
+            promptSaveAs: publicNames.reportJsonName // Force le nom "mon-fichier-report.json"
+        });
+
+        // --- C. GÉNÉRATION DU RÉSUMÉ HUMAIN ---
+        // On utilise les données contenues dans 'result'
+        const summary = analyzeReport(
+            result.reportData, 
+            result.originalRowsCount, 
+            result.cleanedRowsCount, 
+            result.originalColumnCount
+        );
+
+        // --- D. RÉPONSE AU FRONTEND ---
         res.json({
             success: true,
-            summary: summary,
-            csvTempName: tempCsvFileName,
-            reportTempName: tempReportFileName,
-            downloadName: publicNames.cleanCsvName,
-            reportDownloadName: publicNames.reportJsonName,
+            summary: summary,              // Le texte HTML pour ton site
+            downloadUrl: csvUrl,           // Le lien pour télécharger le CSV
+            downloadName: publicNames.cleanCsvName, // Le nom du fichier CSV
+            
+            reportDownloadUrl: reportUrl,  // ✅ Le lien pour télécharger le JSON
+            reportDownloadName: publicNames.reportJsonName // Le nom du fichier JSON
         });
 
     } catch (err) {
-        console.error("ERREUR /clean-file:", err.message);
-
+        console.error("ERREUR /clean-file:", err); 
         if (err.code === 'LIMIT_FILE_SIZE') {
              return res.status(400).json({ success: false, message: "Le fichier est trop volumineux (Max 15Mo)." });
         }
-        res.status(500).json({ success: false, message: "Erreur serveur." });
-
-        try {
-            if (tempCsvFileName) await fs.unlink(join(OUTPUTS_DIR, tempCsvFileName)).catch(() => {});
-            if (tempReportFileName) await fs.unlink(join(OUTPUTS_DIR, tempReportFileName)).catch(() => {});
-        } catch (e) { /* ignore */ }
+        res.status(500).json({ success: false, message: "Erreur serveur lors du traitement." });
     }
 });
 
-// --- TÂCHE DE FOND (NETTOYAGE) ---
-async function cleanupStaleFiles() {
-    try {
-        const files = await fs.readdir(OUTPUTS_DIR);
-        const now = Date.now();
-        for (const file of files) {
-            if (file.startsWith('.')) continue;
-            const filePath = join(OUTPUTS_DIR, file);
-            try {
-                const stats = await fs.stat(filePath); 
-                if ((now - stats.mtimeMs) > STALE_TIME_MS) {
-                    await fs.unlink(filePath); 
-                    console.log(`[NETTOYAGE] Supprimé : ${file}`);
-                }
-            } catch (e) { }
-        }
-    } catch (err) { console.error("[NETTOYAGE] Erreur:", err.message); }
-}
-
-// PORT POUR CLOUD RUN (8080)
 const PORT = process.env.PORT || 8080; 
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`Serveur Production lancé sur le port ${PORT}`);
-    cleanupStaleFiles();
-    setInterval(cleanupStaleFiles, CLEANUP_INTERVAL_MS);
 });
