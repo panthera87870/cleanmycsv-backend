@@ -4,7 +4,8 @@ import { Storage } from "@google-cloud/storage"; // ✅ AJOUT : Import du SDK Go
 import multer from "multer";
 import compression from "compression";
 import { randomUUID } from "crypto"; 
-import helmet from "helmet"; 
+import helmet from "helmet";
+import rateLimit from 'express-rate-limit';
 
 // 🗑️ SUPPRESSION : fs, path, url (Inutiles car on ne stocke plus rien en local)
 
@@ -73,13 +74,28 @@ const upload = multer({
     limits: { fileSize: 15 * 1024 * 1024 } 
 });
 
+const limiter = rateLimit({
+    windowMs: 1 * 60 * 1000, // 1 minute
+    max: 10, // Max 10 requêtes par IP par minute
+    message: { 
+        success: false, 
+        message: "Vous allez trop vite ! Veuillez attendre une petite minute avant de réessayer." 
+    },
+    standardHeaders: true, // Retourne les infos de limite dans les headers (RateLimit-*)
+    legacyHeaders: false, // Désactive les vieux headers (X-RateLimit-*)
+    // Cette fonction permet de gérer correctement les IP derrière le proxy Cloud Run
+    keyGenerator: (req) => {
+        return req.ip; 
+    }
+});
+
 // --- ROUTES ---
 
 // 🗑️ SUPPRESSION COMPLÈTE DE LA ROUTE "GET /download/:filename"
 // Raison : C'est Google qui va gérer le téléchargement via une URL sécurisée directe.
 
 // ROUTE : Upload et Nettoyage
-app.post("/clean-file", upload.single("csv_file_to_clean"), async (req, res) => {
+app.post("/clean-file", limiter, upload.single("csv_file_to_clean"), async (req, res) => {
     try {
         if (!req.file) throw new Error("Aucun fichier n'a été téléversé.");
         
