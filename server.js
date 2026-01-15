@@ -93,12 +93,22 @@ const limiter = rateLimit({
 
 // --- ROUTES ---
 
-// --- ROUTE DE WARM-UP (RÉVEIL) ---
-// Cette route ne fait rien d'autre que répondre "Présent !" pour allumer le serveur.
-app.get("/wakeup", (req, res) => {
-    res.status(200).json({ status: "ready", message: "Serveur prêt et chaud !" });
+// Route racine pour confirmer que le serveur est en ligne (évite l'erreur 500 sur /)
+app.get("/", (req, res) => {
+    res.status(200).send("CleanMyCSV Backend is running and secure.");
 });
 
+// --- ROUTE DE WARM-UP (RÉVEIL) ---
+app.get("/wakeup", (req, res) => {
+    const key = req.headers['x-warmup-key'];
+    
+    if (key === 'warmup_cleanmyCSV_26_!') {
+        return res.status(200).json({ status: "ready" });
+    }
+    
+    // Si c'est un robot ou un curieux, on répond "403 Forbidden" sans donner d'explications
+    res.status(403).send("Forbidden");
+});
 // 🗑️ SUPPRESSION COMPLÈTE DE LA ROUTE "GET /download/:filename"
 // Raison : C'est Google qui va gérer le téléchargement via une URL sécurisée directe.
 
