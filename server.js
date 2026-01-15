@@ -76,20 +76,28 @@ const upload = multer({
 
 const limiter = rateLimit({
     windowMs: 1 * 60 * 1000, // 1 minute
-    max: 10, // Max 10 requêtes par IP par minute
+    max: 20, // Max 10 requêtes par IP par minute
     message: { 
         success: false, 
         message: "Vous allez trop vite ! Veuillez attendre une petite minute avant de réessayer." 
     },
-    standardHeaders: true, // Retourne les infos de limite dans les headers (RateLimit-*)
-    legacyHeaders: false, // Désactive les vieux headers (X-RateLimit-*)
-    // Cette fonction permet de gérer correctement les IP derrière le proxy Cloud Run
-    keyGenerator: (req) => {
-        return req.ip; 
+    standardHeaders: 'draft-7', // Standard moderne pour les headers
+    legacyHeaders: false,
+    // ✅ C'est ICI que la magie opère pour nettoyer tes logs :
+    // On désactive les validations qui créent les fausses alertes sur Cloud Run
+    validate: {
+        xForwardedForHeader: false,
+        trustProxy: false
     }
 });
 
 // --- ROUTES ---
+
+// --- ROUTE DE WARM-UP (RÉVEIL) ---
+// Cette route ne fait rien d'autre que répondre "Présent !" pour allumer le serveur.
+app.get("/wakeup", (req, res) => {
+    res.status(200).json({ status: "ready", message: "Serveur prêt et chaud !" });
+});
 
 // 🗑️ SUPPRESSION COMPLÈTE DE LA ROUTE "GET /download/:filename"
 // Raison : C'est Google qui va gérer le téléchargement via une URL sécurisée directe.
