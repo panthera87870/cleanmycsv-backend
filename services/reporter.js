@@ -124,21 +124,22 @@ export function analyzeReport(report, originalRowsCount, cleanedRowsCount, origi
             stats.rowsAffected.add(change.row);
         }
         
-        // Note: On cherche toujours les mots-clés français car c'est ce que ton cleaner.js génère actuellement.
-        // Si un jour tu traduis cleaner.js, il faudra changer ces 'includes'.
-        if (change.column === "METADATA" && change.reason.includes("Conversion de l'encodage")) {
+        // On check les raisons venant du cleaner (qui sont maintenant en anglais)
+        const reason = change.reason || "";
+
+        if (change.column === "METADATA" && reason.includes("Encoding conversion")) {
             stats.encodingFixed = true;
         }
-        else if (change.reason.includes("date normalisée")) stats.dateNormalizations++;
-        else if (change.reason.includes("montant normalisé")) stats.amountNormalizations++;
-        else if (change.reason.includes("email auto-corrigé")) stats.emailCorrections++; // Ta logique
-        else if (change.reason.includes("téléphone normalisé")) stats.phoneCorrections++; // Ta logique
-        else if (change.reason.includes("Code postal corrigé")) stats.postalCodeCorrections++;
-        else if (change.reason.includes("nettoyage général")) stats.generalFixes++;
+        else if (reason.includes("Date normalized")) stats.dateNormalizations++;
+        else if (reason.includes("Amount normalized")) stats.amountNormalizations++;
+        else if (reason.includes("Email auto-fixed")) stats.emailCorrections++;
+        else if (reason.includes("Phone normalized")) stats.phoneCorrections++;
+        else if (reason.includes("Zip code fixed")) stats.postalCodeCorrections++;
+        else if (reason.includes("General cleanup")) stats.generalFixes++;
         
-        else if (change.reason.includes("Ligne vide")) stats.rowsRemovedVides++;
-        else if (change.reason.includes("Doublon")) stats.rowsRemovedDoublons++;
-        else if (change.reason.includes("COLUMNS_MODIFIED")) stats.columnAddedCurrency++;
+        else if (reason.includes("Empty row")) stats.rowsRemovedVides++;
+        else if (reason.includes("Duplicate row")) stats.rowsRemovedDoublons++;
+        else if (reason.includes("Currency column added")) stats.columnAddedCurrency++;
     });
 
     const finalRowsRemoved = stats.rowsRemovedDoublons + stats.rowsRemovedVides;

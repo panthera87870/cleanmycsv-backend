@@ -1,6 +1,5 @@
 import Papa from "papaparse";
 import iconv from "iconv-lite";
-// 🗑️ SUPPRESSION : imports 'fs' et 'path' (Inutiles : on ne touche plus au disque dur)
 import { 
     normalizeAmount, 
     normalizeDate, 
@@ -12,14 +11,11 @@ import {
 const MAX_REPORT_DETAILS = 1000; 
 
 /**
- * Nettoie un fichier CSV (Buffer) et renvoie le contenu nettoyé + le rapport.
- * Ne sauvegarde plus rien sur le disque.
+ * Nettoie un fichier CSV (Buffer) avec logique locale (FR/US).
+ * Output: JSON "English First".
  */
-// 🔄 MODIF : On enlève les paramètres de noms de fichiers, on garde juste le buffer
-export async function cleanCsv(fileBuffer) {
+export async function cleanCsv(fileBuffer, lang = 'en') {
     
-    // 🗑️ SUPPRESSION : variables finalCsvPath et finalReportPath
-
     const report = [];
     const extractedCurrencies = {};
 
@@ -32,41 +28,40 @@ export async function cleanCsv(fileBuffer) {
                 column: "INFO",
                 before: "...",
                 after: "...",
-                reason: "⚠️ Limite d'affichage atteinte (1000+ corrections). Le nettoyage continue mais les détails ne sont plus listés."
+                reason: "⚠️ Display limit reached (1000+ fixes). Process continues but details are hidden."
             });
         }
     };
 
     try {
-        // --- 1. DÉTECTION ET DÉCODAGE --- (Identique à avant)
+        // --- 1. DÉTECTION ET DÉCODAGE ---
         let content;
-        let detectedEncoding = "UTF-8";
-
+        
+        // Tentative UTF-8
         const contentUtf8 = iconv.decode(fileBuffer, "utf8");
         const errorsUtf8 = (contentUtf8.match(/\uFFFD/g) || []).length;
 
         if (errorsUtf8 === 0) {
             content = contentUtf8;
-            detectedEncoding = "UTF-8";
         } else {
+            // Tentative Windows-1252 (Excel FR standard)
             const contentAnsi = iconv.decode(fileBuffer, "win1252");
             const errorsAnsi = (contentAnsi.match(/\uFFFD/g) || []).length;
 
             if (errorsAnsi === 0) {
                 content = contentAnsi;
-                detectedEncoding = "Windows-1252";
-                safeReportPush({ row: 0, column: "METADATA", before: "Format Excel (Ancien)", after: "Format Universel (UTF-8)", reason: "Conversion de l'encodage pour garantir l'affichage des accents." });
+                safeReportPush({ row: 0, column: "METADATA", before: "Windows-1252", after: "UTF-8", reason: "Encoding conversion (Excel) to UTF-8" });
             } else {
-                console.log(`[ENCODAGE] Win1252 a des erreurs (${errorsAnsi}). Tentative MacRoman...`);
+                // Tentative MacRoman (Vieux Macs)
                 const contentMac = iconv.decode(fileBuffer, "macroman");
                 content = contentMac;
-                detectedEncoding = "MacRoman";
-                safeReportPush({ row: 0, column: "METADATA", before: "Format Apple (Legacy)", after: "Format Universel (UTF-8)", reason: "Conversion de l'encodage Mac pour garantir l'affichage des accents." });
+                safeReportPush({ row: 0, column: "METADATA", before: "MacRoman", after: "UTF-8", reason: "Encoding conversion (Mac) to UTF-8" });
             }
         }
 
-        // --- 2. SEPARATEUR & PARSING --- (Identique)
-        const separator = detectSeparator(content);
+        // --- 2. SEPARATEUR INTELLIGENT ---
+        const separator = detectSeparator(content, lang);
+        
         let parsed;
         try {
             parsed = Papa.parse(content, {
@@ -75,16 +70,18 @@ export async function cleanCsv(fileBuffer) {
                 skipEmptyLines: false 
             });
         } catch (e) {
-            throw new Error("Erreur critique lors du parsing CSV: " + e.message);
+            throw new Error("Critical CSV parsing error: " + e.message);
         }
 
         if (parsed.errors.length > 0) {
-            throw new Error(`Le fichier CSV est mal formaté (ligne ${parsed.errors[0].row + 1}): ${parsed.errors[0].message}`);
+            if (parsed.errors[0].code !== "TooManyFields") {
+                 throw new Error(`CSV Format Error (Line ${parsed.errors[0].row + 1}): ${parsed.errors[0].message}`);
+            }
         }
 
         let rows = parsed.data;
 
-        // --- FIX : Ligne entière entre guillemets --- (Identique)
+        // --- FIX : Ligne entière entre guillemets ---
         if (rows.length > 0 && rows[0].length === 1) {
             const firstCell = rows[0][0];
             if (typeof firstCell === 'string' && firstCell.includes(separator)) {
@@ -100,7 +97,7 @@ export async function cleanCsv(fileBuffer) {
         const originalRowsCount = rows.length; 
         const originalColumnCount = rows.length > 0 ? rows[0].length : 0;
 
-        // LOGIQUE METIER NETTOYAGE
+        // --- 3. IDENTIFICATION DES COLONNES ---
 
         let headers = rows[0] || [];
         if (headers.length > 0) {
@@ -108,21 +105,22 @@ export async function cleanCsv(fileBuffer) {
             rows[0] = headers;
         }
 
-        // Déterminer les index (Logique existante conservée)
         const columnIndex = headers.map(h => h.toLowerCase());
-        const dateIndex = columnIndex.findIndex(h => /date|created_at|time/i.test(h));
-        const montantIndex = columnIndex.findIndex(h => /montant|amount|price|prix|total/i.test(h));
-        const emailIndex = columnIndex.findIndex(h => /email|mail|e-mail/i.test(h));
-        const cpIndex = columnIndex.findIndex(h => /^(cp|zip|code\s?postal)$/i.test(h));
-        const phoneRegex = /tél|tel|phone|mobile|portable|gsm/i;
-        const nameRegex = /nom|name|prenom|firstname|lastname|ville|city|societe|company|pays|country/i;
+        const dateIndex = columnIndex.findIndex(h => /date|created_at|time|jour|day/i.test(h));
+        const montantIndex = columnIndex.findIndex(h => /montant|amount|price|prix|total|value/i.test(h));
+        const emailIndex = columnIndex.findIndex(h => /email|mail|e-mail|courriel/i.test(h));
+        const cpIndex = columnIndex.findIndex(h => /^(cp|zip|code\s?postal|postcode)$/i.test(h));
+        
+        const phoneRegex = /tél|tel|phone|mobile|portable|gsm|cell/i;
+        const nameRegex = /nom|name|prenom|firstname|lastname|ville|city|societe|company|pays|country|state/i;
+        
         const nameIndices = headers
             .map((h, i) => nameRegex.test(h) ? i : -1)
             .filter(i => i !== -1);
         
         let hasFoundAnyCurrency = false;
 
-        // 4. Boucle de nettoyage
+        // --- 4. BOUCLE DE NETTOYAGE ---
         rows = rows.map((row, rowIndex) =>
             row.map((cell, colIndex) => {
                 if (rowIndex === 0 || !cell) return cell;
@@ -144,14 +142,12 @@ export async function cleanCsv(fileBuffer) {
 
                 // DATE
                 if (colIndex === dateIndex) {
-                    fixed = normalizeDate(value);
+                    fixed = normalizeDate(value, lang);
                     if (fixed !== value) {
                         safeReportPush({
-                            row: rowIndex,
-                            column: headers[colIndex] || `col_${colIndex}`,
-                            before: original,
-                            after: fixed,
-                            reason: "date normalisée en AAAA-MM-JJ"
+                            row: rowIndex, column: headers[colIndex],
+                            before: original, after: fixed,
+                            reason: "Date normalized"
                         });
                         value = fixed;
                     }
@@ -159,7 +155,7 @@ export async function cleanCsv(fileBuffer) {
 
                 // MONTANT
                 else if (colIndex === montantIndex) {
-                    const result = normalizeAmount(value);
+                    const result = normalizeAmount(value, lang);
                     fixed = result.amount;
                     if (result.currency) {
                         if (!extractedCurrencies[rowIndex]) extractedCurrencies[rowIndex] = {};
@@ -168,11 +164,9 @@ export async function cleanCsv(fileBuffer) {
                     }
                     if (fixed !== value) {
                         safeReportPush({
-                            row: rowIndex,
-                            column: headers[colIndex] || `col_${colIndex}`,
-                            before: original,
-                            after: fixed,
-                            reason: "montant normalisé"
+                            row: rowIndex, column: headers[colIndex],
+                            before: original, after: fixed,
+                            reason: "Amount normalized"
                         });
                         value = fixed;
                     }
@@ -186,47 +180,48 @@ export async function cleanCsv(fileBuffer) {
                         .replace(/\s/g, "");
                     if (fixed !== value) {
                         safeReportPush({
-                            row: rowIndex,
-                            column: headers[colIndex] || `col_${colIndex}`,
-                            before: original,
-                            after: fixed,
-                            reason: "email auto-corrigé"
+                            row: rowIndex, column: headers[colIndex],
+                            before: original, after: fixed,
+                            reason: "Email auto-fixed"
                         });
                         value = fixed;
                     }
                 }
 
-                // TÉLÉPHONE
+                // TÉLÉPHONE (C'est ici que tu avais l'erreur probablement)
                 else if (headers[colIndex] && phoneRegex.test(headers[colIndex])) {
                     let digits = value.replace(/\D/g, "");
-                    if (digits.length >= 9) {
-                        if (digits.startsWith("330")) digits = "33" + digits.slice(3); 
-                        if (digits.startsWith("0") && digits.length >= 10) digits = "33" + digits.slice(1); 
-                        
-                        fixed = "+" + digits;
-                        if (fixed !== value) {
-                            safeReportPush({
-                                row: rowIndex,
-                                column: headers[colIndex] || `col_${colIndex}`,
-                                before: original,
-                                after: fixed,
-                                reason: "téléphone normalisé en format +33"
-                            });
-                            value = fixed;
+                    
+                    if (lang === 'fr') {
+                        // Logique FR (+33)
+                        if (digits.length >= 9) {
+                            if (digits.startsWith("330")) digits = "33" + digits.slice(3); 
+                            if (digits.startsWith("0") && digits.length >= 10) digits = "33" + digits.slice(1); 
+                            fixed = "+" + digits;
                         }
+                    } else {
+                        // Logique US (Juste le nettoyage des caractères, pas de préfixe forcé)
+                        if (digits.length > 5) fixed = digits; 
+                    }
+
+                    if (fixed !== value && fixed !== original.replace(/\s/g, '')) {
+                         safeReportPush({
+                            row: rowIndex, column: headers[colIndex],
+                            before: original, after: fixed,
+                            reason: "Phone normalized"
+                        });
+                        value = fixed;
                     }
                 }
 
                 // CODE POSTAL
                 else if (colIndex === cpIndex) {
-                    fixed = normalizePostalCode(value);
+                    fixed = normalizePostalCode(value, lang);
                     if (fixed !== value) {
                         safeReportPush({
-                            row: rowIndex,
-                            column: headers[colIndex] || `col_${colIndex}`,
-                            before: original,
-                            after: fixed,
-                            reason: "Code postal corrigé"
+                            row: rowIndex, column: headers[colIndex],
+                            before: original, after: fixed,
+                            reason: "Zip code fixed"
                         });
                         value = fixed;
                     }
@@ -240,7 +235,7 @@ export async function cleanCsv(fileBuffer) {
                     }
                 }
                 
-                // Log nettoyage général (seulement si significatif)
+                // Nettoyage général
                 const isSpecific = colIndex === dateIndex || colIndex === montantIndex || 
                                    (headers[colIndex] && /email|tel/i.test(headers[colIndex]));
                 
@@ -248,27 +243,23 @@ export async function cleanCsv(fileBuffer) {
                     const trimmedOriginal = original.trim().replace(/\s+/g, " ");
                     if (value !== trimmedOriginal) {
                         safeReportPush({
-                            row: rowIndex,
-                            column: headers[colIndex] || `col_${colIndex}`,
-                            before: original,
-                            after: value,
-                            reason: "nettoyage général"
+                            row: rowIndex, column: headers[colIndex],
+                            before: original, after: value,
+                            reason: "General cleanup"
                         });
                     }
                 }
 
-                // SÉCURITÉ : Anti-CSV Injection
+                // SÉCURITÉ
                 if (typeof value === 'string' && /^[=\+\-@]/.test(value)) {
                     const isSafeNumber = /^[\+\-][\d\s\.\,]*$/.test(value);
                     if (!isSafeNumber) {
+                        let unsafeValue = value;
                         value = "'" + value; 
-                        // NOUVEAU : On logue explicitement cette action de sécurité
                         safeReportPush({
-                            row: rowIndex,
-                            column: headers[colIndex] || `col_${colIndex}`,
-                            before: unsafeValue,
-                            after: value,
-                            reason: "🛡️ SÉCURITÉ : Formule neutralisée (Anti-Injection CSV)"
+                            row: rowIndex, column: headers[colIndex],
+                            before: unsafeValue, after: value,
+                            reason: "🛡️ SECURITY: Formula neutralized"
                         });
                     }
                 }
@@ -277,16 +268,15 @@ export async function cleanCsv(fileBuffer) {
             })
         );
 
-        // 5. Insertion colonne Devise
+        // --- 5. FINITIONS ---
+        
+        // Ajout colonne Devise
         if (montantIndex !== -1 && hasFoundAnyCurrency) {
-            safeReportPush({ 
-                row: 0, 
-                column: "STRUCTURE", 
-                before: "Non", 
-                after: "Oui", 
-                reason: "COLUMNS_MODIFIED: Ajout de la colonne Devise" 
-            });
-            headers.splice(montantIndex + 1, 0, 'Devise');
+            safeReportPush({ row: 0, column: "STRUCTURE", before: "No", after: "Yes", reason: "Currency column added" });
+            
+            const currencyHeader = lang === 'fr' ? 'Devise' : 'Currency';
+
+            headers.splice(montantIndex + 1, 0, currencyHeader);
             rows[0] = headers;
             rows = rows.map((row, rowIndex) => {
                 if (rowIndex === 0) return row;
@@ -296,7 +286,7 @@ export async function cleanCsv(fileBuffer) {
             });
         }
 
-        // 6. Harmonisation des colonnes
+        // Harmonisation & Suppression
         const maxColumns = Math.max(...rows.map(r => r.length));
         rows = rows.map(r => {
             while (r.length < maxColumns) r.push("");
@@ -304,7 +294,6 @@ export async function cleanCsv(fileBuffer) {
             return r;
         });
 
-        // 7. Suppression doublons/vides
         let finalRows = [rows[0]];
         const seen = new Set();
         for(let i = 1; i < rows.length; i++) {
@@ -313,39 +302,31 @@ export async function cleanCsv(fileBuffer) {
             
             const isRowEmpty = row.every(cell => !cell || cell.trim() === "");
             if (isRowEmpty) {
-                safeReportPush({ row: i, column: "ROW", before: "Ligne vide", after: "Supprimée", reason: "Ligne vide" });
+                safeReportPush({ row: i, column: "ROW", before: "Empty row", after: "Removed", reason: "Empty row" });
                 continue;
             }
             if (seen.has(rowKey)) {
-                safeReportPush({ row: i, column: "ROW", before: "Doublon", after: "Supprimée", reason: "Doublon" });
+                safeReportPush({ row: i, column: "ROW", before: "Duplicate", after: "Removed", reason: "Duplicate row" });
                 continue;
             }
             seen.add(rowKey);
             finalRows.push(row);
         }
         
-        // 8. Préparation de la sortie
         const utf8Bom = '\ufeff'; 
-        
-        // On transforme le tableau JS en texte CSV
         const csvString = Papa.unparse(finalRows, { delimiter: separator });
-        
-        // On ajoute le BOM pour Excel
         const finalCsvContent = utf8Bom + csvString;
 
-        // 🗑️ SUPPRESSION : fs.writeFile(...)
-
-        // 🔄 RETOUR : On renvoie un OBJET complet au serveur
         return { 
-            csvContent: finalCsvContent,      // Le contenu du fichier (String)
-            reportData: report,               // Le rapport brut (Tableau JSON)
+            csvContent: finalCsvContent,      
+            reportData: report,               
             originalRowsCount: originalRowsCount,     
             cleanedRowsCount: finalRows.length, 
             originalColumnCount: originalColumnCount  
         };
 
     } catch (error) {
-        console.error("Erreur critique dans cleanCsv:", error.message);
+        console.error("Critical cleanCsv error:", error.message);
         throw error;
     }
 }

@@ -1,13 +1,11 @@
 import express from "express";
 import cors from "cors"; 
-import { Storage } from "@google-cloud/storage"; // ✅ AJOUT : Import du SDK Google Storage
+import { Storage } from "@google-cloud/storage";
 import multer from "multer";
 import compression from "compression";
 import { randomUUID } from "crypto"; 
 import helmet from "helmet";
 import rateLimit from 'express-rate-limit';
-
-// 🗑️ SUPPRESSION : fs, path, url (Inutiles car on ne stocke plus rien en local)
 
 import { cleanCsv } from "./services/cleaner.js";
 import { 
@@ -17,22 +15,51 @@ import {
 
 const app = express();
 
-// --- CONFIGURATION STORAGE ---
-const storage = new Storage(); // Cloud Run détecte les infos automatiquement
-const bucketName = "cleanmycsv-temp-stockage-prod"; // <--- ⚠️ À REMPLIR
+const SERVER_MESSAGES = {
+    fr: {
+        no_file: "Aucun fichier fourni.",
+        too_large: "Le fichier est trop volumineux (Max 15Mo).",
+        server_error: "Erreur serveur lors du traitement.",
+        cors_error: "Accès interdit par la politique CORS.",
+        too_many_requests: "Trop de tentatives de nettoyage. Veuillez patienter 1 minute."
+    },
+    en: {
+        no_file: "No file uploaded.",
+        too_large: "File too large (Max 15MB).",
+        server_error: "Server error during processing.",
+        cors_error: "Not allowed by CORS policy.",
+        too_many_requests: "Too many cleaning attempts. Please wait 1 minute."
+    }
+};
 
-// --- SPÉCIFIQUE CLOUD RUN (PROD) ---
+const storage = new Storage(); 
+const bucketName = "cleanmycsv-temp-stockage-prod";
+
 app.enable('trust proxy'); 
 
 const allowedOrigins = [
     'https://www.cleanmycsv.fr',
     'https://cleanmycsv.fr',
-    'https://cleanmycsv-frontend.vercel.app'
+    'https://cleanmycsv-frontend.vercel.app',
+    'http://localhost:5500', 
+    'http://127.0.0.1:5500'
 ];
+
+app.use(cors({
+    origin: function (origin, callback) {
+        if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+            callback(null, true);
+        } else {
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'X-Warmup-Key'],
+    credentials: true
+}));
 
 app.use(compression());
 
-// 🔥 CONFIGURATION HELMET : SÉCURITÉ MAXIMALE POUR LA PROD
 app.use(helmet({
     contentSecurityPolicy: {
         directives: {
@@ -41,7 +68,6 @@ app.use(helmet({
             styleSrc: ["'self'", "https://fonts.googleapis.com", "https://cdnjs.cloudflare.com"],
             fontSrc: ["'self'", "https://fonts.gstatic.com", "https://cdnjs.cloudflare.com"],
             imgSrc: ["'self'", "data:"], 
-            // ✅ MODIF : On autorise la connexion au storage Google
             connectSrc: ["'self'", "https://storage.googleapis.com"], 
             frameAncestors: ["'none'"],
             objectSrc: ["'none'"],
@@ -55,114 +81,109 @@ app.use(helmet({
     }
 }));
 
-// Configuration CORS
-app.use(cors({ 
-    origin: function (origin, callback) {
-        if (!origin || allowedOrigins.includes(origin)) {
-            callback(null, true);
-        } else {
-            callback(new Error('Not allowed by CORS')); 
-        }
-    }
-}));
-
-// 🗑️ SUPPRESSION : OUTPUTS_DIR, STALE_TIME, mkdirSync (Plus de dossier local)
-
-// CONFIGURATION MULTER (Mémoire uniquement)
 const upload = multer({ 
     storage: multer.memoryStorage(), 
     limits: { fileSize: 15 * 1024 * 1024 } 
 });
 
-const limiter = rateLimit({
-    windowMs: 1 * 60 * 1000, // 1 minute
-    max: 20, // Max 10 requêtes par IP par minute
-    message: { 
-        success: false, 
-        message: "Vous allez trop vite ! Veuillez attendre une petite minute avant de réessayer." 
-    },
-    standardHeaders: 'draft-7', // Standard moderne pour les headers
+// --- 1. LIMITEUR GLOBAL (SÉCURITÉ DE BASE) ---
+// Protège contre le DDOS général, mais laisse naviguer tranquillement
+// 300 requêtes par 5 minutes (très large pour charger CSS/JS/Fonts)
+const globalLimiter = rateLimit({
+    windowMs: 5 * 60 * 1000, 
+    max: 300, 
+    message: "Too many requests global.",
+    standardHeaders: 'draft-7',
     legacyHeaders: false,
-    // ✅ C'est ICI que la magie opère pour nettoyer tes logs :
-    // On désactive les validations qui créent les fausses alertes sur Cloud Run
-    validate: {
-        xForwardedForHeader: false,
-        trustProxy: false
-    }
+    validate: { xForwardedForHeader: false, trustProxy: false }
+});
+app.use(globalLimiter);
+
+// --- 2. LIMITEUR STRICT (POUR LE CLEANER) ---
+// Protège ton CPU et ton portefeuille.
+// 10 nettoyages par minute max par IP.
+const cleaningLimiter = rateLimit({
+    windowMs: 1 * 60 * 1000, 
+    max: 10, 
+    handler: (req, res) => {
+        // Réponse personnalisée bilingue en cas de blocage
+        const userLang = req.query.lang === 'fr' ? 'fr' : 'en';
+        res.status(429).json({ 
+            success: false, 
+            message: SERVER_MESSAGES[userLang].too_many_requests 
+        });
+    },
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+    validate: { xForwardedForHeader: false, trustProxy: false }
 });
 
 // --- ROUTES ---
 
-// Route racine pour confirmer que le serveur est en ligne (évite l'erreur 500 sur /)
+// ROUTE RACINE (évite l'erreur 500 sur /)
 app.get("/", (req, res) => {
     res.status(200).send("CleanMyCSV Backend is running and secure.");
 });
 
-// --- ROUTE DE WARM-UP (RÉVEIL) ---
+// ROUTE DE WARM-UP (RÉVEIL)
 app.get("/wakeup", (req, res) => {
     const key = req.headers['x-warmup-key'];
-    
     if (key === 'warmup_cleanmyCSV_26_!') {
-        return res.status(200).json({ status: "ready" });
+        res.set('Cache-Control', 'no-store'); // Force le réveil sans cache
+        return res.status(200).send('Ready');
     }
-    
-    // Si c'est un robot ou un curieux, on répond "403 Forbidden" sans donner d'explications
     res.status(403).send("Forbidden");
 });
-// 🗑️ SUPPRESSION COMPLÈTE DE LA ROUTE "GET /download/:filename"
-// Raison : C'est Google qui va gérer le téléchargement via une URL sécurisée directe.
 
-// ROUTE : Upload et Nettoyage
-app.post("/clean-file", limiter, upload.single("csv_file_to_clean"), async (req, res) => {
+// ROUTE : UPLOAD ET NETTOYAGE
+app.post("/clean-file", cleaningLimiter, upload.single("csv_file_to_clean"), async (req, res) => {
+    
+    const userLang = req.query.lang === 'fr' ? 'fr' : 'en';
+    const t = SERVER_MESSAGES[userLang];
+
     try {
-        if (!req.file) throw new Error("Aucun fichier n'a été téléversé.");
+
+        if (!req.file) {
+            return res.status(400).json({ success: false, message: t.no_file });
+        }
+
+        const originalName = req.file.originalname;
+        const publicNames = generateCleanFilenames(originalName);
+        const uniqueId = randomUUID();
         
-        // 1. RÉCUPÉRATION DE LA LANGUE (NEW)
-        // Par défaut 'en' (stratégie US First), sinon ce que le front envoie
-        const userLang = req.query.lang === 'fr' ? 'fr' : 'en';
+        const cleanFileName = `cleaned_${uniqueId}.csv`;
+        const reportFileName = `report_${uniqueId}.json`;
 
-        // 1. On prépare les jolis noms pour l'utilisateur
-        const publicNames = generateCleanFilenames(req.file.originalname);
-        const fileBuffer = req.file.buffer; 
+        // A. NETTOYAGE (En mémoire)
+        const result = await cleanCsv(req.file.buffer, userLang);
 
-        // 2. On lance le nettoyage
-        // 'result' contient TOUT : le csv propre, le rapport json, et les stats
-        const result = await cleanCsv(fileBuffer);
-
-        // Identifiant unique pour ce nettoyage
-        const fileId = randomUUID();
-
-        // --- A. GESTION DU CSV (Fichier propre) ---
-        const csvBlob = storage.bucket(bucketName).file(`clean-${fileId}.csv`);
-        
-        // On envoie le CSV dans le bucket
-        await csvBlob.save(result.csvContent, { contentType: 'text/csv', resumable: false });
-
-        // On crée le lien de téléchargement pour le CSV
-        const [csvUrl] = await csvBlob.getSignedUrl({
-            action: 'read',
-            expires: Date.now() + 15 * 60 * 1000, // Lien valide 15 min
-            promptSaveAs: publicNames.cleanCsvName // Force le nom "mon-fichier-clean.csv"
+        // B. UPLOAD VERS G-CLOUD (En parallèle)
+        const fileUploadPromise = storage.bucket(bucketName).file(cleanFileName).save(result.csvContent, {
+            resumable: false,
+            contentType: 'text/csv',
         });
 
-        // --- B. GESTION DU RAPPORT JSON (Ce qu'il manquait) ---
-        const reportBlob = storage.bucket(bucketName).file(`report-${fileId}.json`);
-        
-        // On envoie le JSON dans le bucket
-        await reportBlob.save(JSON.stringify(result.reportData, null, 2), { 
-            contentType: 'application/json', 
-            resumable: false 
+        const reportUploadPromise = storage.bucket(bucketName).file(reportFileName).save(JSON.stringify(result.reportData), {
+            resumable: false,
+            contentType: 'application/json',
         });
 
-        // On crée le lien de téléchargement pour le JSON
-        const [reportUrl] = await reportBlob.getSignedUrl({
+        await Promise.all([fileUploadPromise, reportUploadPromise]);
+
+        // C. URL Signées
+        const [csvUrl] = await storage.bucket(bucketName).file(cleanFileName).getSignedUrl({
             action: 'read',
             expires: Date.now() + 15 * 60 * 1000,
-            promptSaveAs: publicNames.reportJsonName // Force le nom "mon-fichier-report.json"
+            promptSaveAs: publicNames.cleanCsvName
         });
 
-        // --- C. GÉNÉRATION DU RÉSUMÉ HUMAIN ---
-        // On utilise les données contenues dans 'result'
+        const [reportUrl] = await storage.bucket(bucketName).file(reportFileName).getSignedUrl({
+            action: 'read',
+            expires: Date.now() + 15 * 60 * 1000,
+            promptSaveAs: publicNames.reportJsonName
+        });
+
+        // D. GÉNÉRATION DU RÉSUMÉ
         const summary = analyzeReport(
             result.reportData, 
             result.originalRowsCount, 
@@ -171,32 +192,30 @@ app.post("/clean-file", limiter, upload.single("csv_file_to_clean"), async (req,
             userLang
         );
 
-        // --- D. RÉPONSE AU FRONTEND ---
+        // E. RÉPONSE
         res.json({
             success: true,
-            summary: summary,              // Le texte HTML pour ton site
-            downloadUrl: csvUrl,           // Le lien pour télécharger le CSV
-            downloadName: publicNames.cleanCsvName, // Le nom du fichier CSV
-            
-            reportDownloadUrl: reportUrl,  // ✅ Le lien pour télécharger le JSON
-            reportDownloadName: publicNames.reportJsonName // Le nom du fichier JSON
+            summary: summary,
+            downloadUrl: csvUrl,
+            downloadName: publicNames.cleanCsvName,
+            reportDownloadUrl: reportUrl,
+            reportDownloadName: publicNames.reportJsonName
         });
 
     } catch (err) {
         console.error("ERREUR /clean-file:", err); 
-        // Message d'erreur simple, idéalement à traduire aussi plus tard
-        const msg = req.query.lang === 'fr' 
-            ? "Erreur serveur lors du traitement." 
-            : "Server error during processing.";
-            
+        
+        // Gestion fine des erreurs avec traduction
         if (err.code === 'LIMIT_FILE_SIZE') {
-             return res.status(400).json({ success: false, message: "Le fichier est trop volumineux (Max 15Mo)." });
+             return res.status(400).json({ success: false, message: t.too_large });
         }
-        res.status(500).json({ success: false, message: "Erreur serveur lors du traitement." });
+        
+        // Erreur générique
+        res.status(500).json({ success: false, message: t.server_error });
     }
 });
 
 const PORT = process.env.PORT || 8080; 
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Serveur Production lancé sur le port ${PORT}`);
+    console.log(`Server listening on port ${PORT}`);
 });
