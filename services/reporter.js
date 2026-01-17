@@ -1,22 +1,82 @@
 import { parse } from "path";
 
-/**
- * Formate un nombre en chaîne de caractères avec un espace comme séparateur de milliers.
- * @param {number} num Le nombre à formater.
- * @returns {string} Le nombre formaté (ex: 12 345).
- */
-function formatNumber(num) {
-    if (typeof num !== 'number') return num;
-    // Utilise la méthode toLocaleString, qui gère nativement le format des milliers
-    // 'fr-FR' utilise l'espace insécable comme séparateur de milliers
-    return num.toLocaleString('fr-FR');
-}
+// 1. DICTIONNAIRE DE TRADUCTION COMPLET
+const TRANSLATIONS = {
+    fr: {
+        // --- Titres et Labels ---
+        original: "Fichier original :",
+        final: "Fichier final :",
+        rows: "lignes",
+        cols: "colonnes",
+        header_note: "(dont 1 en-tête)",
+        details_title: "Détails des actions :",
+        
+        // --- Phrases d'impact ---
+        impact_msg: "L'opération a touché un total de <strong>{n} lignes uniques</strong> (lignes de données affectées par au moins une correction ou suppression).<br><br>",
+        perfect_msg: "<strong>Votre fichier était parfait !</strong><br>L'opération n'a détecté aucune valeur à corriger.<br><br>",
+        finished_msg: "<strong>Nettoyage terminé !</strong><br>",
+        encoding_msg: "<strong>Encodage corrigé :</strong> Votre fichier était au format Excel/Ancien. Il a été converti en format Universel pour sécuriser les accents.<br><br>",
+
+        // --- Détails des actions ---
+        structure_title: "Modification Structurelle :",
+        structure_currency: "La colonne \"Devise\" a été insérée à côté du montant.",
+        
+        deletion_title: "Suppressions de Lignes :",
+        deletion_detail: "{total} lignes ont été retirées (Doublons : {dup}, Vides : {empty}).",
+        
+        normalization_title: "Normalisation des Valeurs :",
+        
+        // --- Items spécifiques (Ta logique) ---
+        item_date: "dates uniformisées",
+        item_amount: "montants normalisés",
+        item_email: "e-mails formatés",      // <-- Conservé
+        item_phone: "téléphones normalisés",  // <-- Conservé
+        item_postal: "codes postaux réparés",
+        item_general: "corrections générales"
+    },
+    en: {
+        // --- Titles and Labels ---
+        original: "Original file:",
+        final: "Cleaned file:",
+        rows: "rows",
+        cols: "columns",
+        header_note: "(incl. 1 header)",
+        details_title: "Action details:",
+
+        // --- Impact Phrases ---
+        impact_msg: "The operation affected a total of <strong>{n} unique rows</strong> (data rows affected by at least one correction or removal).<br><br>",
+        perfect_msg: "<strong>Your file was perfect!</strong><br>No values needed correction.<br><br>",
+        finished_msg: "<strong>Cleaning finished!</strong><br>",
+        encoding_msg: "<strong>Encoding fixed:</strong> Your file was in an old Excel format. It has been converted to Universal format to secure special characters.<br><br>",
+
+        // --- Action Details ---
+        structure_title: "Structural Change:",
+        structure_currency: "The \"Currency\" column was inserted next to the amount.",
+        
+        deletion_title: "Row Deletions:",
+        deletion_detail: "{total} rows removed (Duplicates: {dup}, Empty: {empty}).",
+        
+        normalization_title: "Value Normalization:",
+        
+        // --- Specific Items ---
+        item_date: "dates standardized",
+        item_amount: "amounts normalized",
+        item_email: "emails formatted",
+        item_phone: "phones normalized",
+        item_postal: "zip codes fixed",
+        item_general: "general fixes"
+    }
+};
 
 /**
- * Génère des noms de fichiers publics propres.
- * @param {string} originalName Nom de fichier original (ex: mon_fichier.csv)
- * @returns {{cleanCsvName: string, reportJsonName: string}}
+ * Formate un nombre selon la langue (ex: 1 000 en FR, 1,000 en EN)
  */
+function formatNumber(num, lang = 'en') {
+    if (typeof num !== 'number') return num;
+    const locale = lang === 'fr' ? 'fr-FR' : 'en-US';
+    return num.toLocaleString(locale);
+}
+
 export function generateCleanFilenames(originalName) {
     if (!originalName) return { cleanCsvName: 'cleaned-file.csv', reportJsonName: 'report.json' };
     
@@ -31,21 +91,17 @@ export function generateCleanFilenames(originalName) {
 }
 
 /**
- * Analyse le rapport JSON brut et génère les statistiques et le résumé humain.
- * @param {Array<Object>} report Le tableau de changements du cleaner.
- * @param {number} originalRowsCount Le nombre de lignes originales (incluant l'en-tête).
- * @param {number} cleanedRowsCount Le nombre de lignes nettoyées (incluant l'en-tête).
- * @returns {Object} Un objet contenant le résumé humain et les statistiques détaillées.
+ * Fonction optimisée pour la traduction, conservant 100% de ta logique métier.
  */
-
-export function analyzeReport(report, originalRowsCount, cleanedRowsCount, originalColumnCount) {
+export function analyzeReport(report, originalRowsCount, cleanedRowsCount, originalColumnCount, lang = 'en') {
     
     const totalOriginalRows = originalRowsCount;
     const totalCleanedRows = cleanedRowsCount;
     
-    // Lignes de données (sans l'en-tête) pour les statistiques de suppression/correction
-    const originalDataRows = Math.max(0, originalRowsCount - 1);
-    
+    // Sélection du dictionnaire (FR ou EN)
+    const t = TRANSLATIONS[lang] || TRANSLATIONS.en;
+
+    // --- 1. COLLECTE DES STATISTIQUES (Identique à ton code original) ---
     const stats = {
         totalChanges: report.length,
         originalColumnCount: originalColumnCount,
@@ -55,120 +111,121 @@ export function analyzeReport(report, originalRowsCount, cleanedRowsCount, origi
         columnAddedCurrency: 0,
         dateNormalizations: 0,
         amountNormalizations: 0,
-        emailCorrections: 0,
-        phoneCorrections: 0,
+        emailCorrections: 0,  // Ta logique conservée
+        phoneCorrections: 0,  // Ta logique conservée
+        postalCodeCorrections: 0,
         generalFixes: 0,
-        encodingFixed: false, // Nouveau indicateur
+        encodingFixed: false, 
         rowsAffected: new Set(),
     };
 
     report.forEach(change => {
-        if (change.row > 0) { // Lignes > 0 (pas l'en-tête)
+        if (change.row > 0) { 
             stats.rowsAffected.add(change.row);
         }
         
-        // --- DÉTECTION DE L'ENCODAGE DANS LE RAPPORT ---
+        // Note: On cherche toujours les mots-clés français car c'est ce que ton cleaner.js génère actuellement.
+        // Si un jour tu traduis cleaner.js, il faudra changer ces 'includes'.
         if (change.column === "METADATA" && change.reason.includes("Conversion de l'encodage")) {
             stats.encodingFixed = true;
         }
-
         else if (change.reason.includes("date normalisée")) stats.dateNormalizations++;
         else if (change.reason.includes("montant normalisé")) stats.amountNormalizations++;
-        else if (change.reason.includes("email auto-corrigé")) stats.emailCorrections++;
-        else if (change.reason.includes("téléphone normalisé")) stats.phoneCorrections++;
-        else if (change.reason.includes("Code postal corrigé")) stats.postalCodeCorrections = (stats.postalCodeCorrections || 0) + 1; // Ajout
+        else if (change.reason.includes("email auto-corrigé")) stats.emailCorrections++; // Ta logique
+        else if (change.reason.includes("téléphone normalisé")) stats.phoneCorrections++; // Ta logique
+        else if (change.reason.includes("Code postal corrigé")) stats.postalCodeCorrections++;
         else if (change.reason.includes("nettoyage général")) stats.generalFixes++;
-        // Distinction des suppressions
+        
         else if (change.reason.includes("Ligne vide")) stats.rowsRemovedVides++;
         else if (change.reason.includes("Doublon")) stats.rowsRemovedDoublons++;
         else if (change.reason.includes("COLUMNS_MODIFIED")) stats.columnAddedCurrency++;
     });
 
     const finalRowsRemoved = stats.rowsRemovedDoublons + stats.rowsRemovedVides;
-    stats.rowsRemoved = finalRowsRemoved; // <-- Mise à jour du total corrigé
+    stats.rowsRemoved = finalRowsRemoved;
 
     const totalRowsAffected = stats.rowsAffected.size;
     const finalColumnCount = stats.columnAddedCurrency > 0 ? stats.originalColumnCount + 1 : stats.originalColumnCount;
-    // const removalRate = originalDataRows > 0 ? ((stats.rowsRemoved / originalDataRows) * 100).toFixed(1) : 0;
+
     
-    // --- GESTION DU RÉSUMÉ HUMAIN NOUVELLE STRUCTURE ---
+    // --- 2. GÉNÉRATION DU RÉSUMÉ HUMAIN (TRADUIT) ---
     
     let humanSummary;
     let groupB_Actions = [];
 
-    // Clarification de l'Impact Global
+    // Message d'impact global
     const impactMessageText = totalRowsAffected > 0 
-        ? `L'opération a touché un total de <strong>${formatNumber(totalRowsAffected)} lignes uniques</strong> (lignes de données affectées par au moins une correction ou suppression).<br><br>`
-        : `L'opération n'a détecté aucune valeur à corriger, le fichier était parfait.<br><br>`;
+        ? t.impact_msg.replace('{n}', formatNumber(totalRowsAffected, lang))
+        : t.perfect_msg;
 
-
-    // --- NOUVEAU : Phrase spéciale Encodage ---
+    // Phrase spéciale Encodage
     let encodingMessage = "";
     if (stats.encodingFixed) {
-        encodingMessage = `<strong>Encodage corrigé :</strong> Votre fichier était au format Excel/Ancien. Il a été converti en format Universel pour sécuriser les accents.<br><br>`;
+        encodingMessage = t.encoding_msg;
     }
 
-    // 1. Détermination du message initial
+    // Message initial (Titre + Impact + Encodage)
     if (totalRowsAffected === 0 && stats.rowsRemoved === 0 && stats.columnAddedCurrency === 0 && !stats.encodingFixed) {
-        humanSummary = `<strong>Votre fichier était parfait !</strong><br>`;
+        humanSummary = t.perfect_msg;
     } else {
-        humanSummary = `<strong>Nettoyage terminé !</strong><br> ${impactMessageText} ${encodingMessage}`;
+        humanSummary = `${t.finished_msg} ${impactMessageText} ${encodingMessage}`;
     }
 
-
-    // 2. Détail des Actions (Pour la liste)
+    // Détail des Actions
     
     // a) Colonnes (Structurel)
     if (stats.columnAddedCurrency > 0) {
-        groupB_Actions.push(`<strong>Modification Structurelle :</strong> La colonne "Devise" a été insérée à côté du montant.`);
+        groupB_Actions.push(`<strong>${t.structure_title}</strong> ${t.structure_currency}`);
     }
 
-    // b) Suppressions (Structurel sur les lignes)
+    // b) Suppressions (Remplacement dynamique des variables {total}, {dup}, {empty})
     if (stats.rowsRemoved > 0) {
-        let detail = `${formatNumber(stats.rowsRemoved)} lignes ont été retirées (Doublons: ${formatNumber(stats.rowsRemovedDoublons)}, Vides: ${formatNumber(stats.rowsRemovedVides)}).`;
-        groupB_Actions.push(`<strong>Suppressions de Lignes :</strong> ${detail}`);
+        let detail = t.deletion_detail
+            .replace('{total}', formatNumber(stats.rowsRemoved, lang))
+            .replace('{dup}', formatNumber(stats.rowsRemovedDoublons, lang))
+            .replace('{empty}', formatNumber(stats.rowsRemovedVides, lang));
+            
+        groupB_Actions.push(`<strong>${t.deletion_title}</strong> ${detail}`);
     }
 
-    // c) Corrections de Valeurs (Cellulaire)
+    // c) Corrections de Valeurs (Liste complète conservée)
     let correctionsDetails = [];
-    if (stats.dateNormalizations > 0) correctionsDetails.push(`${formatNumber(stats.dateNormalizations)} dates uniformisées.`);
-    if (stats.amountNormalizations > 0) correctionsDetails.push(`${formatNumber(stats.amountNormalizations)} montants normalisés.`);
-    if (stats.emailCorrections > 0) correctionsDetails.push(`${formatNumber(stats.emailCorrections)} e-mails formatés.`);
-    if (stats.phoneCorrections > 0) correctionsDetails.push(`${formatNumber(stats.phoneCorrections)} téléphones normalisés.`);
-    if (stats.postalCodeCorrections > 0) correctionsDetails.push(`${formatNumber(stats.postalCodeCorrections)} codes postaux réparés.`);
-    if (stats.generalFixes > 0) correctionsDetails.push(`${formatNumber(stats.generalFixes)} corrections générales.`);
+    if (stats.dateNormalizations > 0) correctionsDetails.push(`${formatNumber(stats.dateNormalizations, lang)} ${t.item_date}`);
+    if (stats.amountNormalizations > 0) correctionsDetails.push(`${formatNumber(stats.amountNormalizations, lang)} ${t.item_amount}`);
+    if (stats.emailCorrections > 0) correctionsDetails.push(`${formatNumber(stats.emailCorrections, lang)} ${t.item_email}`); // Ajouté
+    if (stats.phoneCorrections > 0) correctionsDetails.push(`${formatNumber(stats.phoneCorrections, lang)} ${t.item_phone}`); // Ajouté
+    if (stats.postalCodeCorrections > 0) correctionsDetails.push(`${formatNumber(stats.postalCodeCorrections, lang)} ${t.item_postal}`);
+    if (stats.generalFixes > 0) correctionsDetails.push(`${formatNumber(stats.generalFixes, lang)} ${t.item_general}`);
 
     if (correctionsDetails.length > 0) {
-        groupB_Actions.push(`<strong>Normalisation des Valeurs :</strong> ${correctionsDetails.join(' | ')}.`);
+        // On joint avec " | " ou ", " selon ton goût, ici j'ai gardé ton style
+        groupB_Actions.push(`<strong>${t.normalization_title}</strong> ${correctionsDetails.join(' | ')}.`);
     }
 
-    // 3. Assemblage des blocs pour l'affichage final
+    // 3. Assemblage Final HTML
     
-    // Bloc de Diagnostic
     const diagnosticBlock = `
         <div class="report-diagnostic">
-            <p><strong>Fichier original :</strong> ${formatNumber(totalOriginalRows)} lignes (dont 1 en-tête) et ${formatNumber(stats.originalColumnCount)} colonnes.</p>
-            <p><strong>Fichier final :</strong> ${formatNumber(totalCleanedRows)} lignes (dont 1 en-tête) et ${formatNumber(finalColumnCount)} colonnes.<br><br></p>
+            <p><strong>${t.original}</strong> ${formatNumber(totalOriginalRows, lang)} ${t.rows} ${t.header_note} | ${formatNumber(stats.originalColumnCount, lang)} ${t.cols}.</p>
+            <p><strong>${t.final}</strong> ${formatNumber(totalCleanedRows, lang)} ${t.rows} ${t.header_note} | ${formatNumber(finalColumnCount, lang)} ${t.cols}.<br><br></p>
         </div>
     `;
     
-    // Ajout du diagnostic et des détails à la synthèse principale
     humanSummary += diagnosticBlock;
     
     if (groupB_Actions.length > 0) {
          const actionList = groupB_Actions.map(c => `<li>${c}</li>`).join('');
          humanSummary += `
-            <h3>Détails des actions :<br></h3>
+            <h3>${t.details_title}<br></h3>
             <ul class="report-list">
                 ${actionList}
             </ul>
         `;
     }
 
-    // RETOUR FINAL (Le bloc qui manquait pour clôturer la fonction)
     return { 
         ...stats, 
-        humanSummary, 
+        humanSummary, // C'est ici que la version FR ou EN est renvoyée
         totalRowsAffected, 
         originalRowsCount: totalOriginalRows, 
         cleanedRowsCount: totalCleanedRows,

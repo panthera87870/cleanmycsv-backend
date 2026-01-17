@@ -117,6 +117,10 @@ app.post("/clean-file", limiter, upload.single("csv_file_to_clean"), async (req,
     try {
         if (!req.file) throw new Error("Aucun fichier n'a été téléversé.");
         
+        // 1. RÉCUPÉRATION DE LA LANGUE (NEW)
+        // Par défaut 'en' (stratégie US First), sinon ce que le front envoie
+        const userLang = req.query.lang === 'fr' ? 'fr' : 'en';
+
         // 1. On prépare les jolis noms pour l'utilisateur
         const publicNames = generateCleanFilenames(req.file.originalname);
         const fileBuffer = req.file.buffer; 
@@ -163,7 +167,8 @@ app.post("/clean-file", limiter, upload.single("csv_file_to_clean"), async (req,
             result.reportData, 
             result.originalRowsCount, 
             result.cleanedRowsCount, 
-            result.originalColumnCount
+            result.originalColumnCount,
+            userLang
         );
 
         // --- D. RÉPONSE AU FRONTEND ---
@@ -179,6 +184,11 @@ app.post("/clean-file", limiter, upload.single("csv_file_to_clean"), async (req,
 
     } catch (err) {
         console.error("ERREUR /clean-file:", err); 
+        // Message d'erreur simple, idéalement à traduire aussi plus tard
+        const msg = req.query.lang === 'fr' 
+            ? "Erreur serveur lors du traitement." 
+            : "Server error during processing.";
+            
         if (err.code === 'LIMIT_FILE_SIZE') {
              return res.status(400).json({ success: false, message: "Le fichier est trop volumineux (Max 15Mo)." });
         }
