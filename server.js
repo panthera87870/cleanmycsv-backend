@@ -163,7 +163,7 @@ app.post("/clean-file", cleaningLimiter, upload.single("csv_file_to_clean"), asy
             contentType: 'text/csv',
         });
 
-        const reportUploadPromise = storage.bucket(bucketName).file(reportFileName).save(JSON.stringify(result.reportData), {
+        const reportUploadPromise = storage.bucket(bucketName).file(reportFileName).save(JSON.stringify(result.reportData, null, 2), {
             resumable: false,
             contentType: 'application/json',
         });
