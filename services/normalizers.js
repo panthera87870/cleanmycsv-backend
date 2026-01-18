@@ -89,6 +89,19 @@ export function normalizeDate(value, lang = 'en') {
 
     // 2. Unification des séparateurs
     clean = clean.replace(/[\/\.\s]/g, '-');
+
+    // --- CORRECTION ICI : On inclut la virgule dans les séparateurs ---
+    // Avant : clean.replace(/[\/\.\s]/g, '-');
+    // Maintenant : On remplace slash, point, espace ET virgule par un tiret
+    clean = clean.replace(/[\/\.\s,]/g, '-');
+    
+    // On nettoie les tirets multiples (ex: "Jan 5, - 2023" -> "01-5---2023" -> "01-5-2023")
+    clean = clean.replace(/-+/g, '-');
+
+    // On retire le tiret initial ou final si présent
+    if (clean.startsWith('-')) clean = clean.substring(1);
+    if (clean.endsWith('-')) clean = clean.substring(0, clean.length - 1);
+    
     const parts = clean.split('-');
 
     // 3. ANALYSE AVEC CONTEXTE DE LANGUE
