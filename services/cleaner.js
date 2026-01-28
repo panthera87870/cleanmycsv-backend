@@ -312,6 +312,17 @@ export async function cleanCsv(fileBuffer, lang = 'en') {
             seen.add(rowKey);
             finalRows.push(row);
         }
+
+        // Création de l'objet Preview (Top 5 lignes)
+        const previewRows = [];
+        const limit = Math.min(finalRows.length, 6); // 6 pour avoir header + 5 rows
+        for(let i=0; i<limit; i++) {
+            previewRows.push({
+                // On renvoie le tableau brut (Array) au lieu d'une string jointe
+                original: rows[i] ? rows[i] : [], 
+                cleaned: finalRows[i]
+            });
+        }
         
         const utf8Bom = '\ufeff'; 
         const csvString = Papa.unparse(finalRows, { delimiter: separator });
@@ -322,7 +333,8 @@ export async function cleanCsv(fileBuffer, lang = 'en') {
             reportData: report,               
             originalRowsCount: originalRowsCount,     
             cleanedRowsCount: finalRows.length, 
-            originalColumnCount: originalColumnCount  
+            originalColumnCount: originalColumnCount,
+            preview: previewRows  
         };
 
     } catch (error) {

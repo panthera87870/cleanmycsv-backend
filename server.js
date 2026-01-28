@@ -196,6 +196,7 @@ app.post("/clean-file", cleaningLimiter, upload.single("csv_file_to_clean"), asy
         res.json({
             success: true,
             summary: summary,
+            preview: result.preview,
             downloadUrl: csvUrl,
             downloadName: publicNames.cleanCsvName,
             reportDownloadUrl: reportUrl,
