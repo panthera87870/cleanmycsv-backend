@@ -318,9 +318,8 @@ export async function cleanCsv(fileBuffer, lang = 'en') {
         const limit = Math.min(finalRows.length, 6); // 6 pour avoir header + 5 rows
         for(let i=0; i<limit; i++) {
             previewRows.push({
-                // On renvoie le tableau brut (Array) au lieu d'une string jointe
-                original: rows[i] ? rows[i] : [], 
-                cleaned: finalRows[i]
+                original: rows[i] || [], // Tableau brut
+                cleaned: finalRows[i]    // Tableau brut
             });
         }
         
