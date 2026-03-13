@@ -57,7 +57,7 @@ app.use(cors({
         }
     },
     methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'X-Warmup-Key'],
+    allowedHeaders: ['Content-Type', 'X-Warmup-Key', 'x-access-token'],
     credentials: true
 }));
 
