@@ -34,7 +34,10 @@ const SERVER_MESSAGES = {
         too_many_requests: "Too many cleaning attempts. Please wait 1 minute."
     }
 };
-
+// --- COMPTEUR FREEMIUM INTERNE ---
+const ipUsage = new Map();
+// On vide la mémoire toutes les 24 heures pour remettre les compteurs à zéro
+setInterval(() => ipUsage.clear(), 24 * 60 * 60 * 1000);
 const storage = new Storage(); 
 const bucketName = "cleanmycsv-temp-stockage-prod";
 
@@ -137,18 +140,6 @@ const identifyUser = (req, res, next) => {
     next();
 };
 
-// --- 2. LIMITEUR POUR LES GRATUITS (FREEMIUM) ---
-// Utilise 'express-rate-limit' que vous avez déjà importé
-const freemiumLimiter = rateLimit({
-    windowMs: 24 * 60 * 60 * 1000, // 24 heures
-    max: 2, // 2 essais par IP par jour
-    message: { 
-        code: 'LIMIT_REACHED', 
-        message: "Freemium limit reached" // Le front traduira ce message
-    },
-skip: (req) => req.method === 'OPTIONS' || req.userPlan !== 'freemium'
-});
-
 // --- 3. ROUTE DE RETOUR STRIPE (C'est ici que la magie opère) ---
 app.get('/verify-payment', async (req, res) => {
     try {
@@ -205,7 +196,7 @@ app.get("/wakeup", (req, res) => {
 });
 
 // ROUTE : UPLOAD ET NETTOYAGE
-app.post("/clean-file", cleaningLimiter, identifyUser, freemiumLimiter, upload.single("csv_file_to_clean"), async (req, res) => {
+app.post("/clean-file", cleaningLimiter, identifyUser, upload.single("csv_file_to_clean"), async (req, res) => {
     
     const userLang = req.query.lang === 'fr' ? 'fr' : 'en';
     const t = SERVER_MESSAGES[userLang];
@@ -216,10 +207,24 @@ app.post("/clean-file", cleaningLimiter, identifyUser, freemiumLimiter, upload.s
             return res.status(400).json({ success: false, message: t.no_file });
         }
 
-        // VERIFICATION TAILLE FICHIER POUR LES GRATUITS
-        // Si c'est un gratuit et que le fichier fait + de 2Mo
-        if (req.userPlan === 'freemium' && req.file.size > 2 * 1024 * 1024) {
-            return res.status(400).json({ success: false, code: 'FILE_TOO_LARGE_FREE' });
+        // --- 1. VÉRIFICATION DU DROIT D'ACCÈS (LE PAYWALL) ---
+        let requiresPayment = false;
+        let paymentReason = null;
+
+        if (req.userPlan === 'freemium') {
+            const ip = req.ip;
+            const usage = ipUsage.get(ip) || 0;
+
+            if (usage >= 2) {
+                requiresPayment = true;
+                paymentReason = 'LIMIT_REACHED';
+            } else if (req.file.size > 2 * 1024 * 1024) {
+                requiresPayment = true;
+                paymentReason = 'FILE_TOO_LARGE_FREE';
+            } else {
+                // Tout est bon, on compte un essai gratuit
+                ipUsage.set(ip, usage + 1);
+            }
         }
 
         const originalName = req.file.originalname;
@@ -232,6 +237,17 @@ app.post("/clean-file", cleaningLimiter, identifyUser, freemiumLimiter, upload.s
         // A. NETTOYAGE (En mémoire)
         const result = await cleanCsv(req.file.buffer, userLang);
 
+        // --- 3. DÉCLENCHEMENT DU TEASER SI LIMITE ATTEINTE ---
+        if (requiresPayment) {
+            // On s'arrête ici. On n'envoie rien sur le Cloud de Google.
+            // On renvoie un code 402 (Payment Required) avec juste l'aperçu.
+            return res.status(402).json({ 
+                success: false, 
+                code: paymentReason, 
+                preview: result.preview 
+            });
+        }
+        
         // B. UPLOAD VERS G-CLOUD (En parallèle)
         const fileUploadPromise = storage.bucket(bucketName).file(cleanFileName).save(result.csvContent, {
             resumable: false,
