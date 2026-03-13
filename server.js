@@ -6,6 +6,8 @@ import compression from "compression";
 import { randomUUID } from "crypto"; 
 import helmet from "helmet";
 import rateLimit from 'express-rate-limit';
+import Stripe from "stripe";
+import jwt from "jsonwebtoken";
 
 import { cleanCsv } from "./services/cleaner.js";
 import { 
@@ -14,7 +16,8 @@ import {
 } from "./services/reporter.js";
 
 const app = express();
-
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+const JWT_SECRET = process.env.JWT_SECRET || "une_cle_de_secours";
 const SERVER_MESSAGES = {
     fr: {
         no_file: "Aucun fichier fourni.",
@@ -118,6 +121,73 @@ const cleaningLimiter = rateLimit({
     validate: { xForwardedForHeader: false, trustProxy: false }
 });
 
+// --- 1. MIDDLEWARE : QUI EST L'UTILISATEUR ? ---
+const identifyUser = (req, res, next) => {
+    const token = req.headers['x-access-token']; // Le frontend enverra ça
+    req.userPlan = 'freemium'; // Par défaut, c'est un gratuit
+
+    if (token) {
+        try {
+            const decoded = jwt.verify(token, JWT_SECRET);
+            req.userPlan = decoded.plan; // 'single', '24h', ou 'lifetime'
+        } catch (err) {
+            console.log("Token invalide (peut-être expiré)");
+        }
+    }
+    next();
+};
+
+// --- 2. LIMITEUR POUR LES GRATUITS (FREEMIUM) ---
+// Utilise 'express-rate-limit' que vous avez déjà importé
+const freemiumLimiter = rateLimit({
+    windowMs: 24 * 60 * 60 * 1000, // 24 heures
+    max: 2, // 2 essais par IP par jour
+    message: { 
+        code: 'LIMIT_REACHED', 
+        message: "Freemium limit reached" // Le front traduira ce message
+    },
+    keyGenerator: (req) => req.ip, // On tracke par IP
+    skip: (req) => req.userPlan !== 'freemium' // SI on a payé, ON NE LIMITE PAS
+});
+
+// --- 3. ROUTE DE RETOUR STRIPE (C'est ici que la magie opère) ---
+app.get('/verify-payment', async (req, res) => {
+    try {
+        const { session_id } = req.query;
+        if (!session_id) return res.redirect('https://cleanmycsv.fr');
+
+        const session = await stripe.checkout.sessions.retrieve(session_id);
+
+        if (session.payment_status === 'paid') {
+            let plan = 'single';
+            let duration = '2h'; // Par défaut 9€
+
+            // Détection de l'offre selon le montant (en centimes)
+            // ATTENTION : Si vous vendez en USD, Stripe renvoie aussi en centimes (2900 pour 29.00)
+            const amount = session.amount_total; 
+
+            if (amount >= 2900 && amount < 9000) { // Offre 29€/$
+                plan = '24h';
+                duration = '24h';
+            } else if (amount >= 9900) { // Offre 99€/$
+                plan = 'lifetime';
+                duration = '36500d'; // 100 ans
+            }
+
+            // Création du passe-droit (Token)
+            const token = jwt.sign({ plan }, JWT_SECRET, { expiresIn: duration });
+
+            // On renvoie l'utilisateur vers l'accueil avec son passe-droit
+            res.redirect(`https://cleanmycsv.fr/?token=${token}&plan=${plan}`);
+        } else {
+            res.redirect(`https://cleanmycsv.fr/?error=payment_failed`);
+        }
+    } catch (err) {
+        console.error("Erreur Stripe:", err);
+        res.redirect(`https://cleanmycsv.fr/?error=server_error`);
+    }
+});
+
 // --- ROUTES ---
 
 // ROUTE RACINE (évite l'erreur 500 sur /)
@@ -136,7 +206,7 @@ app.get("/wakeup", (req, res) => {
 });
 
 // ROUTE : UPLOAD ET NETTOYAGE
-app.post("/clean-file", cleaningLimiter, upload.single("csv_file_to_clean"), async (req, res) => {
+app.post("/clean-file", cleaningLimiter, identifyUser, freemiumLimiter, upload.single("csv_file_to_clean"), async (req, res) => {
     
     const userLang = req.query.lang === 'fr' ? 'fr' : 'en';
     const t = SERVER_MESSAGES[userLang];
@@ -145,6 +215,12 @@ app.post("/clean-file", cleaningLimiter, upload.single("csv_file_to_clean"), asy
 
         if (!req.file) {
             return res.status(400).json({ success: false, message: t.no_file });
+        }
+
+        // VERIFICATION TAILLE FICHIER POUR LES GRATUITS
+        // Si c'est un gratuit et que le fichier fait + de 2Mo
+        if (req.userPlan === 'freemium' && req.file.size > 2 * 1024 * 1024) {
+            return res.status(400).json({ success: false, code: 'FILE_TOO_LARGE_FREE' });
         }
 
         const originalName = req.file.originalname;

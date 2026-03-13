@@ -21,8 +21,10 @@
     "express-rate-limit": "^8.2.1",
     "helmet": "^8.1.0",
     "iconv-lite": "^0.7.0",
+    "jsonwebtoken": "^9.0.3",
     "multer": "^2.0.2",
-    "papaparse": "^5.5.3"
+    "papaparse": "^5.5.3",
+    "stripe": "^20.4.1"
   },
   "directories": {
     "test": "test"
