@@ -146,8 +146,7 @@ const freemiumLimiter = rateLimit({
         code: 'LIMIT_REACHED', 
         message: "Freemium limit reached" // Le front traduira ce message
     },
-    keyGenerator: (req) => req.ip, // On tracke par IP
-    skip: (req) => req.userPlan !== 'freemium' // SI on a payé, ON NE LIMITE PAS
+skip: (req) => req.method === 'OPTIONS' || req.userPlan !== 'freemium'
 });
 
 // --- 3. ROUTE DE RETOUR STRIPE (C'est ici que la magie opère) ---
