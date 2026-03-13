@@ -237,6 +237,15 @@ app.post("/clean-file", cleaningLimiter, identifyUser, upload.single("csv_file_t
         // A. NETTOYAGE (En mémoire)
         const result = await cleanCsv(req.file.buffer, userLang);
 
+        // --- B. GÉNÉRATION DU RÉSUMÉ (DÉPLACÉ ICI) ---
+        const summary = analyzeReport(
+            result.reportData, 
+            result.originalRowsCount, 
+            result.cleanedRowsCount, 
+            result.originalColumnCount,
+            userLang
+        );
+
         // --- 3. DÉCLENCHEMENT DU TEASER SI LIMITE ATTEINTE ---
         if (requiresPayment) {
             // On s'arrête ici. On n'envoie rien sur le Cloud de Google.
@@ -244,10 +253,11 @@ app.post("/clean-file", cleaningLimiter, identifyUser, upload.single("csv_file_t
             return res.status(402).json({ 
                 success: false, 
                 code: paymentReason, 
-                preview: result.preview 
+                preview: result.preview,
+                summary: summary 
             });
         }
-        
+
         // B. UPLOAD VERS G-CLOUD (En parallèle)
         const fileUploadPromise = storage.bucket(bucketName).file(cleanFileName).save(result.csvContent, {
             resumable: false,
@@ -273,15 +283,6 @@ app.post("/clean-file", cleaningLimiter, identifyUser, upload.single("csv_file_t
             expires: Date.now() + 15 * 60 * 1000,
             promptSaveAs: publicNames.reportJsonName
         });
-
-        // D. GÉNÉRATION DU RÉSUMÉ
-        const summary = analyzeReport(
-            result.reportData, 
-            result.originalRowsCount, 
-            result.cleanedRowsCount, 
-            result.originalColumnCount,
-            userLang
-        );
 
         // E. RÉPONSE
         res.json({
