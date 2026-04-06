@@ -8,6 +8,7 @@ import helmet from "helmet";
 import rateLimit from 'express-rate-limit';
 import Stripe from "stripe";
 import jwt from "jsonwebtoken";
+import { Resend } from 'resend';
 
 import { cleanCsv } from "./services/cleaner.js";
 import { 
@@ -17,6 +18,7 @@ import {
 
 const app = express();
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+const resend = new Resend(process.env.RESEND_API_KEY);
 const JWT_SECRET = process.env.JWT_SECRET || "une_cle_de_secours";
 const SERVER_MESSAGES = {
     fr: {
@@ -34,9 +36,8 @@ const SERVER_MESSAGES = {
         too_many_requests: "Too many cleaning attempts. Please wait 1 minute."
     }
 };
-// --- COMPTEUR FREEMIUM INTERNE ---
+
 const ipUsage = new Map();
-// On vide la mémoire toutes les 24 heures pour remettre les compteurs à zéro
 setInterval(() => ipUsage.clear(), 24 * 60 * 60 * 1000);
 const storage = new Storage(); 
 const bucketName = "cleanmycsv-temp-stockage-prod";
@@ -60,7 +61,7 @@ app.use(cors({
         }
     },
     methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'X-Warmup-Key', 'x-access-token'],
+    allowedHeaders: ['Content-Type', 'X-Warmup-Key', 'x-access-token', 'stripe-signature'],
     credentials: true
 }));
 
@@ -92,9 +93,6 @@ const upload = multer({
     limits: { fileSize: 15 * 1024 * 1024 } 
 });
 
-// --- 1. LIMITEUR GLOBAL (SÉCURITÉ DE BASE) ---
-// Protège contre le DDOS général, mais laisse naviguer tranquillement
-// 300 requêtes par 5 minutes (très large pour charger CSS/JS/Fonts)
 const globalLimiter = rateLimit({
     windowMs: 5 * 60 * 1000, 
     max: 300, 
@@ -105,14 +103,10 @@ const globalLimiter = rateLimit({
 });
 app.use(globalLimiter);
 
-// --- 2. LIMITEUR STRICT (POUR LE CLEANER) ---
-// Protège ton CPU et ton portefeuille.
-// 10 nettoyages par minute max par IP.
 const cleaningLimiter = rateLimit({
     windowMs: 1 * 60 * 1000, 
     max: 10, 
     handler: (req, res) => {
-        // Réponse personnalisée bilingue en cas de blocage
         const userLang = req.query.lang === 'fr' ? 'fr' : 'en';
         res.status(429).json({ 
             success: false, 
@@ -124,23 +118,88 @@ const cleaningLimiter = rateLimit({
     validate: { xForwardedForHeader: false, trustProxy: false }
 });
 
-// --- 1. MIDDLEWARE : QUI EST L'UTILISATEUR ? ---
 const identifyUser = (req, res, next) => {
-    const token = req.headers['x-access-token']; // Le frontend enverra ça
-    req.userPlan = 'freemium'; // Par défaut, c'est un gratuit
+    const token = req.headers['x-access-token']; 
+    req.userPlan = 'freemium'; 
 
     if (token) {
         try {
             const decoded = jwt.verify(token, JWT_SECRET);
-            req.userPlan = decoded.plan; // 'single', '24h', ou 'lifetime'
+            req.userPlan = decoded.plan; 
         } catch (err) {
-            console.log("Token invalide (peut-être expiré)");
+            console.log("Token invalide ou expiré");
         }
     }
     next();
 };
 
-// --- 3. ROUTE DE RETOUR STRIPE (C'est ici que la magie opère) ---
+// --- NOUVEAU : LE WEBHOOK STRIPE ---
+// Il DOIT utiliser express.raw pour valider la signature cryptographique de Stripe
+app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) => {
+    const sig = req.headers['stripe-signature'];
+    let event;
+
+    try {
+        // Validation que la requête vient bien de Stripe
+        event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+    } catch (err) {
+        console.error(`❌ Erreur Webhook: ${err.message}`);
+        return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+
+    // Traitement uniquement si le paiement est un succès
+    if (event.type === 'checkout.session.completed') {
+        const session = event.data.object;
+        
+        const customerEmail = session.customer_details.email;
+        const amount = session.amount_total;
+
+        let plan = 'single';
+        let duration = '2h'; 
+
+        if (amount >= 2900 && amount < 9000) { 
+            plan = '24h';
+            duration = '24h';
+        } else if (amount >= 9900) { 
+            plan = 'lifetime';
+            duration = '36500d'; 
+        }
+
+        // Création du token d'accès
+        const token = jwt.sign({ plan }, JWT_SECRET, { expiresIn: duration });
+        const magicLink = `https://cleanmycsv.fr/?token=${token}&plan=${plan}`;
+
+        // Envoi de l'email via Resend
+        try {
+            await resend.emails.send({
+                from: 'CleanMyCSV <contact@cleanmycsv.fr>',
+                to: customerEmail,
+                subject: '🚀 Votre accès CleanMyCSV / Your CleanMyCSV Access',
+                html: `
+                    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; text-align: center;">
+                        <h2>Merci pour votre achat ! / Thank you for your purchase!</h2>
+                        <p>Voici votre lien d'accès personnel. / Here is your personal access link.</p>
+                        <div style="margin: 30px 0;">
+                            <a href="${magicLink}" style="background-color: #000; color: #fff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold;">Accéder à l'outil / Access Tool</a>
+                        </div>
+                        <p style="color: #666; font-size: 14px; border-top: 1px solid #eee; padding-top: 20px;">
+                            <strong>Gardez cet email précieusement.</strong> Ce lien est votre clé d'accès unique.<br>
+                            <strong>Keep this email safe.</strong> This link is your unique access key.
+                        </p>
+                    </div>
+                `
+            });
+            console.log(`✅ Email envoyé avec succès à ${customerEmail}`);
+        } catch (emailError) {
+            console.error('❌ Erreur lors de l\'envoi de l\'email:', emailError);
+        }
+    }
+
+    // On répond 200 à Stripe pour dire qu'on a bien reçu le message
+    res.json({received: true});
+});
+
+// --- MODIFIÉ : LA ROUTE DE RETOUR ---
 app.get('/verify-payment', async (req, res) => {
     try {
         const { session_id } = req.query;
@@ -149,26 +208,9 @@ app.get('/verify-payment', async (req, res) => {
         const session = await stripe.checkout.sessions.retrieve(session_id);
 
         if (session.payment_status === 'paid') {
-            let plan = 'single';
-            let duration = '2h'; // Par défaut 9€
-
-            // Détection de l'offre selon le montant (en centimes)
-            // ATTENTION : Si vous vendez en USD, Stripe renvoie aussi en centimes (2900 pour 29.00)
-            const amount = session.amount_total; 
-
-            if (amount >= 2900 && amount < 9000) { // Offre 29€/$
-                plan = '24h';
-                duration = '24h';
-            } else if (amount >= 9900) { // Offre 99€/$
-                plan = 'lifetime';
-                duration = '36500d'; // 100 ans
-            }
-
-            // Création du passe-droit (Token)
-            const token = jwt.sign({ plan }, JWT_SECRET, { expiresIn: duration });
-
-            // On renvoie l'utilisateur vers l'accueil avec son passe-droit
-            res.redirect(`https://cleanmycsv.fr/?token=${token}&plan=${plan}`);
+            // Le token est géré par le Webhook. Ici on redirige juste vers une page de succès.
+            // Ton frontend devra afficher : "Paiement réussi, vérifiez vos emails pour le lien d'accès."
+            res.redirect(`https://cleanmycsv.fr/?payment=success_check_email`);
         } else {
             res.redirect(`https://cleanmycsv.fr/?error=payment_failed`);
         }
@@ -178,24 +220,19 @@ app.get('/verify-payment', async (req, res) => {
     }
 });
 
-// --- ROUTES ---
-
-// ROUTE RACINE (évite l'erreur 500 sur /)
 app.get("/", (req, res) => {
     res.status(200).send("CleanMyCSV Backend is running and secure.");
 });
 
-// ROUTE DE WARM-UP (RÉVEIL)
 app.get("/wakeup", (req, res) => {
     const key = req.headers['x-warmup-key'];
     if (key === 'warmup_cleanmyCSV_26_!') {
-        res.set('Cache-Control', 'no-store'); // Force le réveil sans cache
+        res.set('Cache-Control', 'no-store'); 
         return res.status(200).send('Ready');
     }
     res.status(403).send("Forbidden");
 });
 
-// ROUTE : UPLOAD ET NETTOYAGE
 app.post("/clean-file", cleaningLimiter, identifyUser, upload.single("csv_file_to_clean"), async (req, res) => {
     
     const userLang = req.query.lang === 'fr' ? 'fr' : 'en';
@@ -207,7 +244,6 @@ app.post("/clean-file", cleaningLimiter, identifyUser, upload.single("csv_file_t
             return res.status(400).json({ success: false, message: t.no_file });
         }
 
-        // --- 1. VÉRIFICATION DU DROIT D'ACCÈS (LE PAYWALL) ---
         let requiresPayment = false;
         let paymentReason = null;
 
@@ -222,7 +258,6 @@ app.post("/clean-file", cleaningLimiter, identifyUser, upload.single("csv_file_t
                 requiresPayment = true;
                 paymentReason = 'FILE_TOO_LARGE_FREE';
             } else {
-                // Tout est bon, on compte un essai gratuit
                 ipUsage.set(ip, usage + 1);
             }
         }
@@ -234,10 +269,8 @@ app.post("/clean-file", cleaningLimiter, identifyUser, upload.single("csv_file_t
         const cleanFileName = `cleaned_${uniqueId}.csv`;
         const reportFileName = `report_${uniqueId}.json`;
 
-        // A. NETTOYAGE (En mémoire)
         const result = await cleanCsv(req.file.buffer, userLang);
 
-        // --- B. GÉNÉRATION DU RÉSUMÉ (DÉPLACÉ ICI) ---
         const summary = analyzeReport(
             result.reportData, 
             result.originalRowsCount, 
@@ -246,10 +279,7 @@ app.post("/clean-file", cleaningLimiter, identifyUser, upload.single("csv_file_t
             userLang
         );
 
-        // --- 3. DÉCLENCHEMENT DU TEASER SI LIMITE ATTEINTE ---
         if (requiresPayment) {
-            // On s'arrête ici. On n'envoie rien sur le Cloud de Google.
-            // On renvoie un code 402 (Payment Required) avec juste l'aperçu.
             return res.status(402).json({ 
                 success: false, 
                 code: paymentReason, 
@@ -258,7 +288,6 @@ app.post("/clean-file", cleaningLimiter, identifyUser, upload.single("csv_file_t
             });
         }
 
-        // B. UPLOAD VERS G-CLOUD (En parallèle)
         const fileUploadPromise = storage.bucket(bucketName).file(cleanFileName).save(result.csvContent, {
             resumable: false,
             contentType: 'text/csv',
@@ -271,7 +300,6 @@ app.post("/clean-file", cleaningLimiter, identifyUser, upload.single("csv_file_t
 
         await Promise.all([fileUploadPromise, reportUploadPromise]);
 
-        // C. URL Signées
         const [csvUrl] = await storage.bucket(bucketName).file(cleanFileName).getSignedUrl({
             action: 'read',
             expires: Date.now() + 15 * 60 * 1000,
@@ -284,7 +312,6 @@ app.post("/clean-file", cleaningLimiter, identifyUser, upload.single("csv_file_t
             promptSaveAs: publicNames.reportJsonName
         });
 
-        // E. RÉPONSE
         res.json({
             success: true,
             summary: summary,
@@ -297,13 +324,9 @@ app.post("/clean-file", cleaningLimiter, identifyUser, upload.single("csv_file_t
 
     } catch (err) {
         console.error("ERREUR /clean-file:", err); 
-        
-        // Gestion fine des erreurs avec traduction
         if (err.code === 'LIMIT_FILE_SIZE') {
              return res.status(400).json({ success: false, message: t.too_large });
         }
-        
-        // Erreur générique
         res.status(500).json({ success: false, message: t.server_error });
     }
 });
