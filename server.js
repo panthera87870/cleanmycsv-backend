@@ -90,7 +90,7 @@ app.use(helmet({
 
 const upload = multer({ 
     storage: multer.memoryStorage(), 
-    limits: { fileSize: 15 * 1024 * 1024 } 
+    limits: { fileSize: 100 * 1024 * 1024 } 
 });
 
 const globalLimiter = rateLimit({
@@ -154,15 +154,19 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
         const customerEmail = session.customer_details.email;
         const amount = session.amount_total;
 
-        let plan = 'single';
-        let duration = '2h'; 
+        let plan = 'plan1'; // Par défaut (ex: achat à 900 centimes / 9€)
+        let duration = '24h'; // Valide 24 heures
 
-        if (amount >= 2900 && amount < 9000) { 
-            plan = '24h';
-            duration = '24h';
-        } else if (amount >= 9900) { 
-            plan = 'lifetime';
-            duration = '36500d'; 
+        // Tarifs Stripe exacts en centimes
+        const PRIX_PLAN_2 = 2900; // 29 euros
+        const PRIX_PLAN_3 = 9900; // 99 euros
+
+        if (amount >= PRIX_PLAN_2 && amount < PRIX_PLAN_3) { 
+            plan = 'plan2';
+            duration = '7d'; // Valide 7 jours
+        } else if (amount >= PRIX_PLAN_3) { 
+            plan = 'plan3';
+            duration = '36500d'; // Accès à vie
         }
 
         // Création du token d'accès
@@ -247,20 +251,39 @@ app.post("/clean-file", cleaningLimiter, identifyUser, upload.single("csv_file_t
         let requiresPayment = false;
         let paymentReason = null;
 
-        if (req.userPlan === 'freemium') {
-            const ip = req.ip;
-            const usage = ipUsage.get(ip) || 0;
+        // --- DÉBUT DE LA MODIFICATION 2 ---
+        const ip = req.ip;
+        const usage = ipUsage.get(ip) || 0;
 
+        // Définition de tes limites exactes en octets
+        const LIMIT_FREE = 5 * 1024 * 1024;   // 5 Mo
+        const LIMIT_PLAN1 = 25 * 1024 * 1024; // 25 Mo
+        const LIMIT_MAX = 100 * 1024 * 1024;  // 100 Mo (Plans 2 et 3)
+
+        if (req.userPlan === 'freemium') {
             if (usage >= 2) {
                 requiresPayment = true;
                 paymentReason = 'LIMIT_REACHED';
-            } else if (req.file.size > 2 * 1024 * 1024) {
+            } else if (req.file.size > LIMIT_FREE) {
                 requiresPayment = true;
-                paymentReason = 'FILE_TOO_LARGE_FREE';
+                paymentReason = 'FILE_TOO_LARGE_FREE'; // Ton frontend pourra dire "Passez au Plan 1"
             } else {
                 ipUsage.set(ip, usage + 1);
             }
+        } 
+        else if (req.userPlan === 'plan1') {
+            if (req.file.size > LIMIT_PLAN1) {
+                requiresPayment = true;
+                paymentReason = 'FILE_TOO_LARGE_PLAN1'; // Ton frontend pourra dire "Passez au Plan 2 ou 3"
+            }
+        } 
+        else if (req.userPlan === 'plan2' || req.userPlan === 'plan3') {
+            if (req.file.size > LIMIT_MAX) {
+                requiresPayment = true;
+                paymentReason = 'FILE_TOO_LARGE_MAX';
+            }
         }
+        // --- FIN DE LA MODIFICATION 2 ---
 
         const originalName = req.file.originalname;
         const publicNames = generateCleanFilenames(originalName);
