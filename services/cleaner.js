@@ -59,6 +59,16 @@ export async function cleanCsv(fileBuffer, lang = 'en') {
             }
         }
 
+        // --- SÉCURITÉ MÉMOIRE (ANTI-CRASH) ---
+        if (content && content.length > 5000) {
+            const debutDuFichier = content.slice(0, 5000); 
+            const aUnSautDeLigne = /[\n\r]/.test(debutDuFichier);
+
+            if (!aUnSautDeLigne) {
+                throw new Error("Format invalide : Structure CSV non détectée.");
+            }
+        }
+
         // --- 2. SEPARATEUR INTELLIGENT ---
         const separator = detectSeparator(content, lang);
         

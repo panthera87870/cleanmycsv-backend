@@ -23,14 +23,14 @@ const JWT_SECRET = process.env.JWT_SECRET || "une_cle_de_secours";
 const SERVER_MESSAGES = {
     fr: {
         no_file: "Aucun fichier fourni.",
-        too_large: "Le fichier est trop volumineux (Max 15Mo).",
+        too_large: "Le fichier est trop volumineux pour votre forfait.",
         server_error: "Erreur serveur lors du traitement.",
         cors_error: "Accès interdit par la politique CORS.",
         too_many_requests: "Trop de tentatives de nettoyage. Veuillez patienter 1 minute."
     },
     en: {
         no_file: "No file uploaded.",
-        too_large: "File too large (Max 15MB).",
+        too_large: "File too large for your current plan.",
         server_error: "Server error during processing.",
         cors_error: "Not allowed by CORS policy.",
         too_many_requests: "Too many cleaning attempts. Please wait 1 minute."
@@ -90,7 +90,21 @@ app.use(helmet({
 
 const upload = multer({ 
     storage: multer.memoryStorage(), 
-    limits: { fileSize: 100 * 1024 * 1024 } 
+    limits: { fileSize: 100 * 1024 * 1024 }, // Limite maximale absolue
+    fileFilter: (req, file, cb) => {
+        // Liste blanche (Whitelisting) des types MIME acceptés pour un CSV
+        const allowedMimeTypes = ['text/csv', 'application/vnd.ms-excel', 'text/plain'];
+        
+        // Vérification combinée : Type MIME + Extension
+        const isValidMime = allowedMimeTypes.includes(file.mimetype);
+        const isCsvExtension = file.originalname.toLowerCase().endsWith('.csv');
+
+        if (isValidMime && isCsvExtension) {
+            cb(null, true); // On accepte le fichier
+        } else {
+            cb(new Error("Format invalide. Seuls les vrais fichiers .csv sont acceptés."), false); // On rejette direct
+        }
+    }
 });
 
 const globalLimiter = rateLimit({
@@ -237,8 +251,30 @@ app.get("/wakeup", (req, res) => {
     res.status(403).send("Forbidden");
 });
 
-app.post("/clean-file", cleaningLimiter, identifyUser, upload.single("csv_file_to_clean"), async (req, res) => {
+app.post("/clean-file", cleaningLimiter, identifyUser, (req, res, next) => {
     
+    const userLang = req.query.lang === 'fr' ? 'fr' : 'en';
+    const t = SERVER_MESSAGES[userLang];
+
+    upload.single("csv_file_to_clean")(req, res, function (err) {
+        // Interception des erreurs de limite de taille
+        if (err instanceof multer.MulterError) {
+            if (err.code === 'LIMIT_FILE_SIZE') {
+                return res.status(400).json({ success: false, message: t.too_large });
+            }
+            return res.status(400).json({ success: false, message: "Erreur d'upload." });
+        } 
+        // Interception de l'erreur de ton fileFilter (Mauvais format)
+        else if (err) {
+            return res.status(400).json({ success: false, message: err.message });
+        }
+        
+        // Tout va bien, on passe à la suite du code
+        next();
+    });
+
+}, async (req, res) => {
+
     const userLang = req.query.lang === 'fr' ? 'fr' : 'en';
     const t = SERVER_MESSAGES[userLang];
 
@@ -246,6 +282,19 @@ app.post("/clean-file", cleaningLimiter, identifyUser, upload.single("csv_file_t
 
         if (!req.file) {
             return res.status(400).json({ success: false, message: t.no_file });
+        }
+
+        // --- NOUVEAU : VÉRIFICATION "MAGIC BYTES" BASIQUE ---
+        // On scanne les premiers 512 octets à la recherche d'octets nuls (0x00)
+        // Un fichier CSV UTF-8 propre ne contient pas d'octets nuls.
+        const headerBuffer = req.file.buffer.subarray(0, 512);
+        const isBinary = headerBuffer.some(byte => byte === 0);
+        
+        if (isBinary) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "Le fichier semble contenir des données non textuelles (binaire détecté). Opération annulée par sécurité." 
+            });
         }
 
         let requiresPayment = false;
@@ -347,9 +396,6 @@ app.post("/clean-file", cleaningLimiter, identifyUser, upload.single("csv_file_t
 
     } catch (err) {
         console.error("ERREUR /clean-file:", err); 
-        if (err.code === 'LIMIT_FILE_SIZE') {
-             return res.status(400).json({ success: false, message: t.too_large });
-        }
         res.status(500).json({ success: false, message: t.server_error });
     }
 });
