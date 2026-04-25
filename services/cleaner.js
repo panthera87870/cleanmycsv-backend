@@ -5,7 +5,8 @@ import {
     normalizeDate, 
     detectSeparator, 
     normalizePostalCode, 
-    normalizeName 
+    normalizeName,
+    normalizePhone 
 } from "./normalizers.js"; 
 
 const MAX_REPORT_DETAILS = 1000; 
@@ -120,10 +121,8 @@ export async function cleanCsv(fileBuffer, lang = 'en') {
         const montantIndex = columnIndex.findIndex(h => /montant|amount|price|prix|total|value/i.test(h));
         const emailIndex = columnIndex.findIndex(h => /email|mail|e-mail|courriel/i.test(h));
         const cpIndex = columnIndex.findIndex(h => /^(cp|zip|code\s?postal|postcode)$/i.test(h));
-        
-        const phoneRegex = /tél|tel|phone|mobile|portable|gsm|cell/i;
+        const phoneRegex = /\b(phone|tel|tél|téléphone|mobile|portable|gsm|whatsapp|contact_no)\b/i;        
         const nameRegex = /nom|name|prenom|firstname|lastname|ville|city|societe|company|pays|country|state/i;
-        
         const nameIndices = headers
             .map((h, i) => nameRegex.test(h) ? i : -1)
             .filter(i => i !== -1);
@@ -198,27 +197,17 @@ export async function cleanCsv(fileBuffer, lang = 'en') {
                     }
                 }
 
-                // TÉLÉPHONE (C'est ici que tu avais l'erreur probablement)
+                // TÉLÉPHONE
                 else if (headers[colIndex] && phoneRegex.test(headers[colIndex])) {
-                    let digits = value.replace(/\D/g, "");
+                    fixed = normalizePhone(value, lang); // Appel à l'intelligence externe
                     
-                    if (lang === 'fr') {
-                        // Logique FR (+33)
-                        if (digits.length >= 9) {
-                            if (digits.startsWith("330")) digits = "33" + digits.slice(3); 
-                            if (digits.startsWith("0") && digits.length >= 10) digits = "33" + digits.slice(1); 
-                            fixed = "+" + digits;
-                        }
-                    } else {
-                        // Logique US (Juste le nettoyage des caractères, pas de préfixe forcé)
-                        if (digits.length > 5) fixed = digits; 
-                    }
-
-                    if (fixed !== value && fixed !== original.replace(/\s/g, '')) {
-                         safeReportPush({
-                            row: rowIndex, column: headers[colIndex],
-                            before: original, after: fixed,
-                            reason: "Phone normalized"
+                    if (fixed !== original) {
+                        safeReportPush({
+                            row: rowIndex,
+                            column: headers[colIndex] || `col_${colIndex}`,
+                            before: original,
+                            after: fixed,
+                            reason: "téléphone normalisé au format international"
                         });
                         value = fixed;
                     }

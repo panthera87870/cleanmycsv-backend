@@ -212,6 +212,71 @@ export function normalizeName(value) {
     return formatted;
 }
 
+export function normalizePhone(value, lang = 'en') {
+    if (!value) return '';
+    let rawValue = value.toString().trim();
+    let str = rawValue;
+
+    // 1. GESTION DES NUMÉROS MULTIPLES (On garde le premier)
+    str = str.split(/[/,;]/)[0].trim();
+
+    // 2. EXTRACTION DE L'EXTENSION
+    let extension = '';
+    const extMatch = str.match(/\b(?:ext|poste|p|x)\b\s*[\.:-]?\s*(\d+)/i);
+    if (extMatch) {
+        extension = ' ext. ' + extMatch[1];
+        str = str.replace(extMatch[0], '');
+    }
+
+    // 3. CONVERSION DU "00" & NETTOYAGE DU "(0)"
+    if (str.startsWith('00')) str = '+' + str.substring(2);
+    str = str.replace(/\(0\)/g, '');
+
+    // 4. DÉTECTION DU "+" ET NETTOYAGE DES CHIFFRES
+    const hasPlus = str.startsWith('+');
+    let clean = str.replace(/\D/g, ''); 
+    
+    // --- SÉCURITÉ ANTI-ID ---
+    // Si > 13 chiffres sans aucun signe de ponctuation dans la valeur d'origine
+    // On considère que c'est un ID (SIRET, code-barre, etc.) et on renvoie brut.
+    if (clean.length > 13 && !hasPlus && !/[ \.\-\(\)]/.test(rawValue)) {
+        return rawValue; 
+    }
+
+    if (hasPlus) clean = '+' + clean;
+
+    // 5. PROTECTION DES INDICATIFS ÉTRANGERS (Allemagne, Suisse, etc.)
+    if (clean.startsWith('+') && !clean.startsWith('+33') && !clean.startsWith('+1')) {
+        return clean + extension; 
+    }
+
+    // 6. LOGIQUE LOCALE (FR / US)
+    if (lang === 'fr') {
+        if (clean.startsWith('0') && clean.length === 10) {
+            clean = '+33' + clean.substring(1);
+        } else if (clean.startsWith('33') && clean.length === 11) {
+            clean = '+' + clean;
+        }
+        
+        if (clean.startsWith('+33') && clean.length === 12) {
+            return clean.replace(/(\+33)(\d)(\d{2})(\d{2})(\d{2})(\d{2})/, '$1 $2 $3 $4 $5 $6') + extension;
+        }
+    } else {
+        if (clean.length === 10 && !clean.startsWith('+')) {
+            clean = '+1' + clean;
+        } else if (clean.length === 11 && clean.startsWith('1')) {
+            clean = '+' + clean;
+        }
+
+        if (clean.startsWith('+1') && clean.length === 12) {
+            return clean.replace(/(\+1)(\d{3})(\d{3})(\d{4})/, '$1 ($2) $3-$4') + extension;
+        }
+    }
+
+    // Si rien n'a matché (numéro trop court ou bizarre), on renvoie la version nettoyée
+    return clean + extension;
+}
+
 /**
  * Détecte le séparateur.
  * Si FR : Préférence pour le point-virgule (;).
