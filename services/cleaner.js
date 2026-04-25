@@ -207,7 +207,7 @@ export async function cleanCsv(fileBuffer, lang = 'en') {
                             column: headers[colIndex] || `col_${colIndex}`,
                             before: original,
                             after: fixed,
-                            reason: "téléphone normalisé au format international"
+                            reason: "Phone normalized"
                         });
                         value = fixed;
                     }
