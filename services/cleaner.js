@@ -121,7 +121,7 @@ export async function cleanCsv(fileBuffer, lang = 'en') {
         const montantIndex = columnIndex.findIndex(h => /montant|amount|price|prix|total|value/i.test(h));
         const emailIndex = columnIndex.findIndex(h => /email|mail|e-mail|courriel/i.test(h));
         const cpIndex = columnIndex.findIndex(h => /^(cp|zip|code\s?postal|postcode)$/i.test(h));
-        const phoneRegex = /\b(phone|tel|tél|téléphone|mobile|portable|gsm|whatsapp|contact_no)\b/i;        
+        const phoneRegex = /phone|tél|tel|mobile|portable|gsm|whatsapp|contact_no/i;        
         const nameRegex = /nom|name|prenom|firstname|lastname|ville|city|societe|company|pays|country|state/i;
         const nameIndices = headers
             .map((h, i) => nameRegex.test(h) ? i : -1)
