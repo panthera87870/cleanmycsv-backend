@@ -261,6 +261,7 @@ export function normalizePhone(value, lang = 'en') {
         if (clean.startsWith('+33') && clean.length === 12) {
             return clean.replace(/(\+33)(\d)(\d{2})(\d{2})(\d{2})(\d{2})/, '$1 $2 $3 $4 $5 $6') + extension;
         }
+        return clean + extension;
     } else {
         if (clean.length === 10 && !clean.startsWith('+')) {
             clean = '+1' + clean;
