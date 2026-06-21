@@ -180,7 +180,7 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
             duration = '7d'; // Valide 7 jours
         } else if (amount >= PRIX_PLAN_3) { 
             plan = 'plan3';
-            duration = '36500d'; // Accès à vie
+            duration = '365d'; // Accès 1 an
         }
 
         // Création du token d'accès
@@ -306,7 +306,7 @@ app.post("/clean-file", cleaningLimiter, identifyUser, (req, res, next) => {
 
         // Définition de tes limites exactes en octets
         const LIMIT_FREE = 5 * 1024 * 1024;   // 5 Mo
-        const LIMIT_PLAN1 = 25 * 1024 * 1024; // 25 Mo
+        const LIMIT_PLAN1 = 100 * 1024 * 1024;
         const LIMIT_MAX = 100 * 1024 * 1024;  // 100 Mo (Plans 2 et 3)
 
         if (req.userPlan === 'freemium') {
