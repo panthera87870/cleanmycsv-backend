@@ -209,6 +209,14 @@ export function normalizeName(value) {
     particles.forEach(p => {
         formatted = formatted.replace(new RegExp(p, 'g'), p.toLowerCase());
     });
+    // 3. FIX : Liste des vrais acronymes business/tech à préserver en majuscules (FR & US)
+    const acronyms = ["IA", "AI", "SAS", "SARL", "SA", "BGB", "PME", "CRM", "CEO", "CTO", "ROI", "IT"];
+    
+    // 4. Restauration des acronymes uniquement s'ils sont isolés (limites de mots \b)
+    acronyms.forEach(acronym => {
+        const regex = new RegExp(`\\b${acronym}\\b`, 'i');
+        formatted = formatted.replace(regex, acronym);
+    });
     return formatted;
 }
 

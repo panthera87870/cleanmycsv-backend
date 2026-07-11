@@ -124,7 +124,10 @@ export async function cleanCsv(fileBuffer, lang = 'en') {
         const phoneRegex = /phone|tél|tel|mobile|portable|gsm|whatsapp|contact_no/i;        
         const nameRegex = /nom|name|prenom|firstname|lastname|ville|city|societe|company|pays|country|state/i;
         const nameIndices = headers
-            .map((h, i) => nameRegex.test(h) ? i : -1)
+            .map((h, i) => {
+                if (/url|link|slug/i.test(h)) return -1;
+                return nameRegex.test(h) ? i : -1;
+            })
             .filter(i => i !== -1);
         
         let hasFoundAnyCurrency = false;
