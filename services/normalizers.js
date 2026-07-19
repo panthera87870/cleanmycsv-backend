@@ -134,6 +134,13 @@ export function normalizeDate(value, lang = 'en') {
             else {
                 d = p1; // Le jour en premier
                 m = p2;
+
+                // 🚀 NOUVELLE INTELLIGENCE FR : Si le "Mois" présumé est > 12 (ex: 12/31/2023)
+                // C'est que c'est une date américaine (MM/JJ). On inverse pour sauver le fichier !
+                if (parseInt(m) > 12) {
+                    m = p1;
+                    d = p2;
+                }
             }
         }
 
