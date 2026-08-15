@@ -251,11 +251,35 @@ export function normalizePhone(value, lang = 'en') {
     const hasPlus = str.startsWith('+');
     let clean = str.replace(/\D/g, ''); 
     
-    // --- SÉCURITÉ ANTI-ID ---
-    // Si > 13 chiffres sans aucun signe de ponctuation dans la valeur d'origine
-    // On considère que c'est un ID (SIRET, code-barre, etc.) et on renvoie brut.
-    if (clean.length > 13 && !hasPlus && !/[ \.\-\(\)]/.test(rawValue)) {
+    // --- SÉCURITÉ ANTI-ID ULTRA-INTELLIGENTE ---
+    
+    // A. Hors des limites mondiales des numéros de téléphone (Norme E.164 : 7 à 15 chiffres)
+    if (clean.length < 7 || clean.length > 15) {
         return rawValue; 
+    }
+
+    // B. Si aucun signe '+' et aucune ponctuation (chiffres bruts collés) :
+    if (!hasPlus && !/[ \.\-\(\)]/.test(rawValue)) {
+        
+        // Si la longueur dépasse 10 chiffres sans aucun signe distinctif, c'est statistiquement un ID
+        if (clean.length > 10) {
+            return rawValue;
+        }
+
+        // Si c'est exactement 10 chiffres sans ponctuation, on applique la règle régionale
+        if (clean.length === 10) {
+            if (lang === 'en') {
+                // Aux USA, un indicatif valide ne commence jamais par 0 ou 1
+                if (clean.startsWith('0') || clean.startsWith('1')) {
+                    return rawValue;
+                }
+            } else {
+                // En France, un numéro local doit obligatoirement commencer par 0
+                if (!clean.startsWith('0')) {
+                    return rawValue;
+                }
+            }
+        }
     }
 
     if (hasPlus) clean = '+' + clean;
