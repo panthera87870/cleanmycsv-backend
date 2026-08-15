@@ -39,6 +39,11 @@ const SERVER_MESSAGES = {
 
 const ipUsage = new Map();
 setInterval(() => ipUsage.clear(), 24 * 60 * 60 * 1000);
+
+// NOUVEAU : Mémoire pour limiter l'utilisation d'un même token Premium
+const tokenUsage = new Map();
+setInterval(() => tokenUsage.clear(), 24 * 60 * 60 * 1000); // Reset toutes les 24h
+
 const storage = new Storage(); 
 const bucketName = "cleanmycsv-temp-stockage-prod";
 
@@ -102,7 +107,7 @@ const upload = multer({
         if (isValidMime && isCsvExtension) {
             cb(null, true); // On accepte le fichier
         } else {
-            cb(new Error("Format invalide. Seuls les vrais fichiers .csv sont acceptés."), false); // On rejette direct
+            cb(new Error("Invalid format. Only valid .csv files are accepted."), false); // On rejette direct
         }
     }
 });
@@ -135,13 +140,15 @@ const cleaningLimiter = rateLimit({
 const identifyUser = (req, res, next) => {
     const token = req.headers['x-access-token']; 
     req.userPlan = 'freemium'; 
+    req.tokenData = null; // NOUVEAU : On prépare la variable
 
     if (token) {
         try {
             const decoded = jwt.verify(token, JWT_SECRET);
             req.userPlan = decoded.plan; 
+            req.tokenData = decoded; // On sauvegarde tout (plan, email, tokenId)
         } catch (err) {
-            console.log("Token invalide ou expiré");
+            console.log("Invalid or expired token");
         }
     }
     next();
@@ -157,38 +164,50 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
         // Validation que la requête vient bien de Stripe
         event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
     } catch (err) {
-        console.error(`❌ Erreur Webhook: ${err.message}`);
+        console.error(`❌ Webhook Error: ${err.message}`);
         return res.status(400).send(`Webhook Error: ${err.message}`);
     }
 
-    // Traitement uniquement si le paiement est un succès
     if (event.type === 'checkout.session.completed') {
-        const session = event.data.object;
-        
-        const customerEmail = session.customer_details.email;
-        const amount = session.amount_total;
+        const sessionData = event.data.object;
+        const customerEmail = sessionData.customer_details?.email;
 
-        let plan = 'plan1'; // Par défaut (ex: achat à 900 centimes / 9€)
-        let duration = '24h'; // Valide 24 heures
-
-        // Tarifs Stripe exacts en centimes
-        const PRIX_PLAN_2 = 2900; // 29 euros
-        const PRIX_PLAN_3 = 9900; // 99 euros
-
-        if (amount >= PRIX_PLAN_2 && amount < PRIX_PLAN_3) { 
-            plan = 'plan2';
-            duration = '7d'; // Valide 7 jours
-        } else if (amount >= PRIX_PLAN_3) { 
-            plan = 'plan3';
-            duration = '365d'; // Accès 1 an
+        if (!customerEmail) {
+            console.error("❌ Missing email in Stripe session.");
+            return res.json({received: true});
         }
 
-        // Création du token d'accès
-        const token = jwt.sign({ plan }, JWT_SECRET, { expiresIn: duration });
-        const magicLink = `https://cleanmycsv.fr/?token=${token}&plan=${plan}`;
-
-        // Envoi de l'email via Resend
         try {
+            // NOUVEAU : On interroge Stripe pour obtenir le Price ID exact
+            const sessionWithItems = await stripe.checkout.sessions.retrieve(
+                sessionData.id,
+                { expand: ['line_items'] }
+            );
+
+            const priceId = sessionWithItems.line_items.data[0].price.id;
+
+            let plan = 'plan1'; 
+            let duration = '24h'; 
+
+            // ⚠️ À FAIRE : Remplace par tes VRAIS Price IDs trouvés sur ton dashboard Stripe (ex: price_1Pxxxxxx)
+            const STRIPE_PRICE_24H = 'prod_U1doMMuf58YkaZ'; 
+            const STRIPE_PRICE_7D = 'prod_U1iG6iwVtnM1Kv';
+            const STRIPE_PRICE_1Y = 'prod_U1iHv7OwTwcoOi';
+
+            if (priceId === STRIPE_PRICE_7D) { 
+                plan = 'plan2';
+                duration = '7d'; 
+            } else if (priceId === STRIPE_PRICE_1Y) { 
+                plan = 'plan3';
+                duration = '365d'; 
+            }
+
+            // NOUVEAU : On ajoute un ID unique et l'email dans le JWT
+            const tokenId = randomUUID();
+            const token = jwt.sign({ plan, email: customerEmail, tokenId }, JWT_SECRET, { expiresIn: duration });
+            const magicLink = `https://cleanmycsv.fr/?token=${token}&plan=${plan}`;
+
+            // Envoi de l'email via Resend
             await resend.emails.send({
                 from: 'CleanMyCSV <contact@cleanmycsv.fr>',
                 to: customerEmail,
@@ -207,9 +226,10 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
                     </div>
                 `
             });
-            console.log(`✅ Email envoyé avec succès à ${customerEmail}`);
-        } catch (emailError) {
-            console.error('❌ Erreur lors de l\'envoi de l\'email:', emailError);
+            console.log(`✅ Email successfully sent to ${customerEmail}`);
+            
+        } catch (error) {
+            console.error('❌ Error processing complete session or email:', error);
         }
     }
 
@@ -233,7 +253,7 @@ app.get('/verify-payment', async (req, res) => {
             res.redirect(`https://cleanmycsv.fr/?error=payment_failed`);
         }
     } catch (err) {
-        console.error("Erreur Stripe:", err);
+        console.error("Stripe Error:", err);
         res.redirect(`https://cleanmycsv.fr/?error=server_error`);
     }
 });
@@ -262,7 +282,7 @@ app.post("/clean-file", cleaningLimiter, identifyUser, (req, res, next) => {
             if (err.code === 'LIMIT_FILE_SIZE') {
                 return res.status(400).json({ success: false, message: t.too_large });
             }
-            return res.status(400).json({ success: false, message: "Erreur d'upload." });
+            return res.status(400).json({ success: false, message: "Uploading Error." });
         } 
         // Interception de l'erreur de ton fileFilter (Mauvais format)
         else if (err) {
@@ -293,8 +313,7 @@ app.post("/clean-file", cleaningLimiter, identifyUser, (req, res, next) => {
         if (isBinary) {
             return res.status(400).json({ 
                 success: false, 
-                message: "Le fichier semble contenir des données non textuelles (binaire détecté). Opération annulée par sécurité." 
-            });
+                message: "The file appears to contain non-textual data (binary detected). Operation aborted for security reasons."            });
         }
 
         let requiresPayment = false;
@@ -308,6 +327,21 @@ app.post("/clean-file", cleaningLimiter, identifyUser, (req, res, next) => {
         const LIMIT_FREE = 5 * 1024 * 1024;   // 5 Mo
         const LIMIT_PLAN1 = 100 * 1024 * 1024;
         const LIMIT_MAX = 100 * 1024 * 1024;  // 100 Mo (Plans 2 et 3)
+
+        // --- NOUVEAU : SÉCURITÉ ANTI-PARTAGE POUR LES PREMIUM ---
+        if (req.userPlan !== 'freemium' && req.tokenData && req.tokenData.tokenId) {
+            const tId = req.tokenData.tokenId;
+            const currentTokenUsage = tokenUsage.get(tId) || 0;
+            const MAX_UPLOADS_PER_TOKEN = 300; // Limite généreuse mais qui bloque le partage massif
+
+            if (currentTokenUsage >= MAX_UPLOADS_PER_TOKEN) {
+                return res.status(429).json({ 
+                    success: false, 
+                    message: "Security quota exceeded for this link. Please contact support if this is a mistake."                });
+            }
+            tokenUsage.set(tId, currentTokenUsage + 1);
+        }
+        // --- FIN NOUVEAU ---
 
         if (req.userPlan === 'freemium') {
             if (usage >= 2) {
