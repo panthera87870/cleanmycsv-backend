@@ -35,30 +35,27 @@ export async function cleanCsv(fileBuffer, lang = 'en') {
     };
 
     try {
-        // --- 1. DÉTECTION ET DÉCODAGE ---
+        // --- 1. DÉTECTION ET DÉCODAGE OPTIMISÉ (ANTI-OOM) ---
         let content;
+        let detectedEncoding = "utf8";
+
+        // Échantillonnage sécurisé des 16 premiers Ko pour détecter l'encodage sans saturer la RAM
+        const sampleBuffer = fileBuffer.subarray(0, 16384);
+        const sampleUtf8 = iconv.decode(sampleBuffer, "utf8");
         
-        // Tentative UTF-8
-        const contentUtf8 = iconv.decode(fileBuffer, "utf8");
-        const errorsUtf8 = (contentUtf8.match(/\uFFFD/g) || []).length;
-
-        if (errorsUtf8 === 0) {
-            content = contentUtf8;
-        } else {
-            // Tentative Windows-1252 (Excel FR standard)
-            const contentAnsi = iconv.decode(fileBuffer, "win1252");
-            const errorsAnsi = (contentAnsi.match(/\uFFFD/g) || []).length;
-
-            if (errorsAnsi === 0) {
-                content = contentAnsi;
+        if ((sampleUtf8.match(/\uFFFD/g) || []).length > 0) {
+            const sampleAnsi = iconv.decode(sampleBuffer, "win1252");
+            if ((sampleAnsi.match(/\uFFFD/g) || []).length === 0) {
+                detectedEncoding = "win1252";
                 safeReportPush({ row: 0, column: "METADATA", before: "Windows-1252", after: "UTF-8", reason: "Encoding conversion (Excel) to UTF-8" });
             } else {
-                // Tentative MacRoman (Vieux Macs)
-                const contentMac = iconv.decode(fileBuffer, "macroman");
-                content = contentMac;
+                detectedEncoding = "macroman";
                 safeReportPush({ row: 0, column: "METADATA", before: "MacRoman", after: "UTF-8", reason: "Encoding conversion (Mac) to UTF-8" });
             }
         }
+
+        // Décodage unique de l'ensemble du fichier avec l'encodage validé
+        content = iconv.decode(fileBuffer, detectedEncoding);
 
         // --- SÉCURITÉ MÉMOIRE (ANTI-CRASH) ---
         if (content && content.length > 5000) {
