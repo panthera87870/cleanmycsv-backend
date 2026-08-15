@@ -167,6 +167,8 @@ const recoveryLimiter = rateLimit({
     validate: { xForwardedForHeader: false, trustProxy: false }
 });
 
+console.log("🔥 CHARGEMENT DE LA ROUTE ADMIN EN COURS...");
+
 // --- ROUTE ADMIN SECRÈTE : Renvoyer un lien à la demande d'un client par email ---
 app.post('/admin/resend-access', express.json(), async (req, res) => {
     // 1. On vérifie que la requête vient bien de toi grâce à une clé secrète dans les headers
