@@ -40,10 +40,6 @@ const SERVER_MESSAGES = {
 const ipUsage = new Map();
 setInterval(() => ipUsage.clear(), 24 * 60 * 60 * 1000);
 
-// NOUVEAU : Mémoire pour limiter l'utilisation d'un même token Premium
-const tokenUsage = new Map();
-setInterval(() => tokenUsage.clear(), 24 * 60 * 60 * 1000); // Reset toutes les 24h
-
 const storage = new Storage(); 
 const bucketName = "cleanmycsv-temp-stockage-prod";
 
@@ -166,8 +162,6 @@ const recoveryLimiter = rateLimit({
     legacyHeaders: false,
     validate: { xForwardedForHeader: false, trustProxy: false }
 });
-
-console.log("🔥 CHARGEMENT DE LA ROUTE ADMIN EN COURS...");
 
 // --- ROUTE ADMIN SECRÈTE : Renvoyer un lien à la demande d'un client par email ---
 app.post('/admin/resend-access', express.json(), async (req, res) => {
@@ -430,20 +424,35 @@ app.post("/clean-file", cleaningLimiter, identifyUser, (req, res, next) => {
         const LIMIT_PLAN1 = 100 * 1024 * 1024;
         const LIMIT_MAX = 100 * 1024 * 1024;  // 100 Mo (Plans 2 et 3)
 
-        // --- NOUVEAU : SÉCURITÉ ANTI-PARTAGE POUR LES PREMIUM ---
-        if (req.userPlan !== 'freemium' && req.tokenData && req.tokenData.tokenId) {
-            const tId = req.tokenData.tokenId;
-            const currentTokenUsage = tokenUsage.get(tId) || 0;
-            const MAX_UPLOADS_PER_TOKEN = 300; // Limite généreuse mais qui bloque le partage massif
+        // --- SÉCURITÉ ANTI-PARTAGE VIA COMPTEUR JWT (STATENESS CLOUD RUN) ---
+        let updatedToken = null;
+        if (req.userPlan !== 'freemium' && req.tokenData) {
+            const currentUsage = req.tokenData.usage || 0;
+            const MAX_UPLOADS_PER_TOKEN = 300;
 
-            if (currentTokenUsage >= MAX_UPLOADS_PER_TOKEN) {
+            if (currentUsage >= MAX_UPLOADS_PER_TOKEN) {
                 return res.status(429).json({ 
                     success: false, 
-                    message: "Security quota exceeded for this link. Please contact support if this is a mistake."                });
+                    message: "Security quota exceeded for this link. Please contact support if this is a mistake."                
+                });
             }
-            tokenUsage.set(tId, currentTokenUsage + 1);
+
+            // On prépare le nouveau compteur
+            const newUsage = currentUsage + 1;
+            
+            // Calcul du temps restant avant expiration du token d'origine pour conserver la même durée de vie
+            const nowSec = Math.floor(Date.now() / 1000);
+            const remainingSec = req.tokenData.exp - nowSec;
+
+            if (remainingSec > 0) {
+                updatedToken = jwt.sign({ 
+                    plan: req.tokenData.plan, 
+                    email: req.tokenData.email, 
+                    tokenId: req.tokenData.tokenId,
+                    usage: newUsage 
+                }, JWT_SECRET, { expiresIn: remainingSec });
+            }
         }
-        // --- FIN NOUVEAU ---
 
         if (req.userPlan === 'freemium') {
             if (usage >= 2) {
@@ -519,6 +528,11 @@ app.post("/clean-file", cleaningLimiter, identifyUser, (req, res, next) => {
             expires: Date.now() + 15 * 60 * 1000,
             promptSaveAs: publicNames.reportJsonName
         });
+
+        // Si un nouveau token a été généré, on l'injecte dans les headers de la réponse
+        if (updatedToken) {
+            res.setHeader('X-Refreshed-Token', updatedToken);
+        }
 
         res.json({
             success: true,
