@@ -154,6 +154,106 @@ const identifyUser = (req, res, next) => {
     next();
 };
 
+// --- NOUVEAU : RATE LIMITER POUR LA RÉCUPÉRATION (Anti-Spam) ---
+const recoveryLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 3, // Maximum 3 tentatives par IP toutes les 15 minutes
+    message: { 
+        success: false, 
+        message: "Too many recovery attempts. Please try again later." 
+    },
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+    validate: { xForwardedForHeader: false, trustProxy: false }
+});
+
+// --- ROUTE ADMIN SECRÈTE : Renvoyer un lien à la demande d'un client par email ---
+app.post('/admin/resend-access', express.json(), async (req, res) => {
+    // 1. On vérifie que la requête vient bien de toi grâce à une clé secrète dans les headers
+    const adminKey = req.headers['x-admin-key'];
+    if (!process.env.ADMIN_SECRET_KEY || adminKey !== process.env.ADMIN_SECRET_KEY) {
+        return res.status(403).json({ success: false, message: "Forbidden: Invalid admin key." });
+    }
+
+    const { email } = req.body;
+    if (!email || !email.includes('@')) {
+        return res.status(400).json({ success: false, message: "Invalid email address." });
+    }
+
+    try {
+        // 2. Recherche du client dans les sessions Stripe
+        const sessions = await stripe.checkout.sessions.list({ limit: 50 });
+        const validSession = sessions.data.find(s => 
+            s.customer_details?.email?.toLowerCase() === email.toLowerCase() && 
+            s.payment_status === 'paid'
+        );
+
+        if (!validSession) {
+            return res.status(404).json({ success: false, message: "No active or paid pass found for this email in Stripe." });
+        }
+
+        // 3. Récupération du Price ID exact
+        const sessionWithItems = await stripe.checkout.sessions.retrieve(
+            validSession.id,
+            { expand: ['line_items'] }
+        );
+
+        const priceId = sessionWithItems.line_items.data[0].price.id;
+
+        let plan = 'plan1'; 
+        let totalDurationSeconds = 24 * 60 * 60; // 24h par défaut
+
+        // ⚠️ Remplace par tes vrais Price IDs Stripe
+        const STRIPE_PRICE_7D = 'prod_U1iG6iwVtnM1Kv';
+        const STRIPE_PRICE_1Y = 'prod_U1iHv7OwTwcoOi';
+
+        if (priceId === STRIPE_PRICE_7D) { 
+            plan = 'plan2';
+            totalDurationSeconds = 7 * 24 * 60 * 60; 
+        } else if (priceId === STRIPE_PRICE_1Y) { 
+            plan = 'plan3';
+            totalDurationSeconds = 365 * 24 * 60 * 60; 
+        }
+
+        // 4. Calcul du temps exact restant
+        const createdAtSeconds = validSession.created; 
+        const nowSeconds = Math.floor(Date.now() / 1000);
+        const elapsedSeconds = nowSeconds - createdAtSeconds;
+        const remainingSeconds = totalDurationSeconds - elapsedSeconds;
+
+        if (remainingSeconds <= 0) {
+            return res.status(400).json({ success: false, message: "This customer's pass has already expired." });
+        }
+
+        // 5. Génération du nouveau JWT et envoi par email
+        const tokenId = randomUUID();
+        const token = jwt.sign({ plan, email, tokenId }, JWT_SECRET, { expiresIn: remainingSeconds });
+        const magicLink = `https://cleanmycsv.fr/?token=${token}&plan=${plan}`;
+
+        await resend.emails.send({
+            from: 'CleanMyCSV <contact@cleanmycsv.fr>',
+            to: email,
+            subject: '🚀 Your CleanMyCSV Access / Votre accès CleanMyCSV',
+            html: `
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; text-align: center;">
+                    <h2>Access Recovery / Récupération d'accès</h2>
+                    <p>Here is your recovered access link. / Voici votre lien d'accès récupéré.</p>
+                    <div style="margin: 30px 0;">
+                        <a href="${magicLink}" style="background-color: #000; color: #fff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold;">Access CleanMyCSV</a>
+                    </div>
+                </div>
+            `
+        });
+
+        console.log(`✅ [ADMIN] Lien renvoyé avec succès à ${email}`);
+        res.json({ success: true, message: `Email successfully resent to ${email}` });
+
+    } catch (err) {
+        console.error("Error in admin resend:", err);
+        res.status(500).json({ success: false, message: "Server error during admin resend." });
+    }
+});
+
 // --- NOUVEAU : LE WEBHOOK STRIPE ---
 // Il DOIT utiliser express.raw pour valider la signature cryptographique de Stripe
 app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) => {
